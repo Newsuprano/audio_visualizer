@@ -1,6 +1,7 @@
 import pygame
 from audio import open_audio_stream, read_chunk_at_position
 from renderer import draw_visualizer
+from circular_renderer import draw_circular_visualizer
 
 audio = "birds_of_a_feather.mp3"
 
