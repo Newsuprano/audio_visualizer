@@ -2,7 +2,10 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-audio = "birds_of_a_feather.mp3"
+#audio = Path("src/audio/heat_waves.wav")
+#audio = Path("src/audio/birds_of_a_feather.mp3")
+#audio = Path("src/audio/symphony.mp3")
+audio = Path("src/audio/krunk.mp3")
 
 def open_audio_stream():
     audio_file = Path(audio)
@@ -18,7 +21,7 @@ def read_next_chunk(f):
     if f is None:
         return None, None
         
-    data = f.read(4096)
+    data = f.read(1024)
     
     # If we reach the end of the file, loop back to the beginning
     if len(data) == 0:
@@ -51,7 +54,7 @@ def read_next_chunk(f):
 
 import numpy as np
 
-def read_chunk_at_position(f, frame_index, chunk_size=4096):
+def read_chunk_at_position(f, frame_index, chunk_size=4096, num_bins=64):
     if f is None:
         return None, None
         
@@ -90,7 +93,7 @@ def read_chunk_at_position(f, frame_index, chunk_size=4096):
     raw_amplitude = (2.0 / N) * np.abs(fft_output[:half_N])
     
     # Pass the linear data into our aggressive log-binning function
-    binned_freqs, binned_amps = get_log_bins(positive_frequencies, raw_amplitude, num_bins=64)
+    binned_freqs, binned_amps = get_log_bins(positive_frequencies, raw_amplitude, num_bins)
     
     return binned_freqs, binned_amps
 
@@ -117,7 +120,8 @@ def get_log_bins(frequencies, amplitudes, num_bins=64):
         
         if np.any(mask) and np.sum(mask) > 0:
             bin_data = amplitudes[mask]
-            val = np.max(bin_data) * 0.4 + np.percentile(bin_data, 50) * 0.6
+            # Shift weight to np.max so sharp kicks/bass hits punch through instantly
+            val = np.max(bin_data) * 0.8 + np.percentile(bin_data, 50) * 0.2
             binned_amplitudes.append(val)
             binned_frequencies.append((low_f + high_f) / 2)
         else:
@@ -134,7 +138,7 @@ def get_log_bins(frequencies, amplitudes, num_bins=64):
         amps_array = np.convolve(amps_array, kernel, mode='same')
     # ------------------------------------------
 
-    scaled_amps = np.log1p(amps_array * 50) / 15.0
+    scaled_amps = np.log1p(amps_array * 50) / 5.0
     final_amps = np.clip(scaled_amps, 0.0, 1.0)
 
     return np.array(binned_frequencies), final_amps
