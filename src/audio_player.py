@@ -2,10 +2,12 @@ import pygame
 from mutagen import File
 import numpy as np
 
+
 class AudioPlayer:
     """Handles static audio file playback, duration tracking, and seeking.
     Designed with a modular interface to easily swap or extend with live desktop audio later.
     """
+
     def __init__(self):
         if not pygame.mixer.get_init():
             pygame.mixer.init()
@@ -14,22 +16,25 @@ class AudioPlayer:
         self.duration = 0.0
         self.is_playing = False
         self.is_loaded = False
-        self.current_offset = 0.0  # Tracks where playback started/resumed from
+        self.current_offset = 0.0
+
+        self._cached_frame = -1
+        self._cached_amplitudes = None
 
     def load_file(self, file_path: str) -> bool:
         """Loads an audio file (.mp3, .wav, etc.), extracts duration, and sets up mixer."""
         try:
             self.file_path = file_path
             
-            # Extract duration universally using mutagen
             audio_info = File(file_path)
-            if audio_info is not None and audio_info.info.length:
-                self.duration = audio_info.info.length
-            else:
-                self.duration = 0.0
+            self.duration = audio_info.info.length if (audio_info is not None and audio_info.info.length) else 0.0
 
             pygame.mixer.music.load(file_path)
             self.is_loaded = True
+            
+            # Reset cache state on new file load
+            self._cached_frame = -1
+            self._cached_amplitudes = None
             return True
         except Exception as e:
             print(f"Error loading audio file: {e}")
@@ -71,6 +76,11 @@ class AudioPlayer:
         target_sec = max(0.0, min(target_sec, self.duration))
         self.current_offset = target_sec
         pygame.mixer.music.play(start=target_sec)
+
+        # Invalidate cache on manual seek jump
+        self._cached_frame = -1
+        self._cached_amplitudes = None
+
         if not self.is_playing:
             pygame.mixer.music.pause()
 
@@ -99,18 +109,26 @@ class AudioPlayer:
         return "file"
 
     def get_amplitudes_at_time(self, time_sec: float, chunk_size: int, num_bins: int, audio_stream) -> np.array:
-        """Calculates current frame from time and reads amplitude/frequency bins via audio utils."""
         if audio_stream is None:
             return None
         
         sampling_rate = getattr(audio_stream, 'samplerate', 44100)
         current_frame = int(time_sec * sampling_rate)
         
-        from audio import read_chunk_at_position
-        _, amplitudes = read_chunk_at_position(
-            audio_stream,
-            current_frame,
-            chunk_size=chunk_size,
-            num_bins=num_bins,
-        )
-        return amplitudes
+        if self._cached_amplitudes is None or abs(current_frame - self._cached_frame) >= (chunk_size // 2):
+            from audio import read_chunk_at_position
+            _, amplitudes = read_chunk_at_position(
+                audio_stream,
+                current_frame,
+                chunk_size=chunk_size,
+                num_bins=num_bins,
+            )
+            self._cached_frame = current_frame
+            
+            if amplitudes is not None:
+                if self._cached_amplitudes is None or len(self._cached_amplitudes) != len(amplitudes):
+                    self._cached_amplitudes = amplitudes.copy()
+                else:
+                    self._cached_amplitudes = self._cached_amplitudes + (amplitudes - self._cached_amplitudes) * 0.4
+                    
+        return self._cached_amplitudes

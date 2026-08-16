@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import QWidget, QSizePolicy
 # Import modular templates
 from templates.line_template import LineTemplate
 from templates.block_template import BlockTemplate
-from audio import read_chunk_at_position  # Moved to top
+from audio import read_chunk_at_position
 
 
 class VisualizerCanvas(QWidget):
@@ -38,15 +38,16 @@ class VisualizerCanvas(QWidget):
 
         # Data states
         self.current_amplitudes = np.array([])
+        self.target_amplitudes = np.array([])
         
-        # References for file mode (to be cleanly abstracted later)
+        # References for file mode
         self.audio_file_stream = None
         self.current_frame = 0
         self.chunk_size = 1024
 
         self.previous_heights = {}
 
-        # 60 FPS Render Timer (Only handles redrawing UI smoothly)
+        # 60 FPS Render Timer
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_visualizer)
         self.timer.start(16)
@@ -62,12 +63,15 @@ class VisualizerCanvas(QWidget):
             self.current_frame = int(time_sec * sampling_rate)
 
     def push_amplitudes(self, amplitudes):
-        """Clean universal entry point for any audio source (File or Live Desktop) to feed data."""
+        """Clean universal entry point to update target amplitudes."""
         if amplitudes is not None:
-            self.current_amplitudes = amplitudes
+            self.target_amplitudes = amplitudes
+            if len(self.current_amplitudes) != len(amplitudes):
+                self.current_amplitudes = amplitudes.copy()
 
     def set_style(self, style_name):
-        if style_name in ["circular", "linear", "symmetric", "burst", "orbit", "dual_wave", "radar"]:
+        styles = ["circular", "linear", "symmetric", "burst", "orbit", "dual_wave", "radar"]
+        if style_name in styles:
             self.visualizer_style = style_name
             self.previous_heights.clear()
 
@@ -76,15 +80,24 @@ class VisualizerCanvas(QWidget):
             self.current_template = self.templates[template_name]
 
     def update_visualizer(self):
-        """Triggers a re-paint frame. (Audio chunk polling can be managed by MainWindow timer or controller)."""
+        """Triggers a re-paint frame."""
         self.update()
 
     def _get_smoothed_height(self, idx, am):
-        target_length = am * self.max_bar_length
-        prev_h = self.previous_heights.get(idx, 0)
-        bar_height = max(5, target_length if target_length > prev_h else prev_h * 0.75 + target_length * 0.25)
-        self.previous_heights[idx] = bar_height
-        return bar_height
+        """Interpolates smoothly toward the target amplitude on every frame."""
+        if idx >= len(self.current_amplitudes) or idx >= len(self.target_amplitudes):
+            target_length = am * self.max_bar_length
+            return max(5, target_length)
+
+        target_val = self.target_amplitudes[idx]
+        current_val = self.current_amplitudes[idx]
+
+        # --- BUTTERY SMOOTH LERP ---
+        smoothed_val = current_val + (target_val - current_val) * 0.25
+        self.current_amplitudes[idx] = smoothed_val
+
+        target_length = smoothed_val * self.max_bar_length
+        return max(5, target_length)
 
     def _get_color(self, idx):
         red = min(255, int(idx * 4))
@@ -105,7 +118,6 @@ class VisualizerCanvas(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
         painter.fillRect(self.rect(), Qt.GlobalColor.black)
 
         width = self.width()

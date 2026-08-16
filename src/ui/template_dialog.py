@@ -1,6 +1,6 @@
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QPixmap, QPainter, QColor, QPen
-from PyQt6.QtWidgets import QDialog, QVBoxLayout, QGridLayout, QLabel, QPushButton, QWidget
+from PyQt6.QtWidgets import QDialog, QVBoxLayout, QGridLayout, QLabel, QPushButton
 import math
 
 class TemplateDialog(QDialog):
@@ -95,9 +95,7 @@ class TemplateDialog(QDialog):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         # Draw a tiny mockup based on whether it's circular/linear and lines/blocks
-        # (This is a lightweight preview generator rendering a mini shape layout)
         if shape_name in ["circular", "burst", "orbit", "dual_wave"]:
-            # Draw mini circular visualizer icon
             cx, cy, r = 50, 40, 20
             for a in range(0, 360, 45):
                 rad = math.radians(a)
@@ -106,13 +104,12 @@ class TemplateDialog(QDialog):
                 
                 if template_key == "lines":
                     painter.setPen(QPen(QColor(0, 255, 150), 2))
-                    painter.drawLine(int(cx + math.cos(rad)*r), int(cy + math.sin(rad)*r), int(x2), int(y2))
+                    painter.drawLine(int(cx + math.cos(rad) * r), int(cy + math.sin(rad) * r), int(x2), int(y2))
                 else: # blocks
                     painter.setBrush(QColor(0, 255, 150))
                     painter.setPen(Qt.PenStyle.NoPen)
                     painter.drawRect(int(x2 - 2), int(y2 - 2), 4, 4)
         else:
-            # Draw mini linear visualizer icon
             for x_pos in range(20, 80, 10):
                 if template_key == "lines":
                     painter.setPen(QPen(QColor(0, 255, 150), 3))

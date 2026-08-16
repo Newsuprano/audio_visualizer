@@ -18,21 +18,22 @@ from PyQt6.QtWidgets import (
     QFormLayout,
     QSizePolicy,
     QFrame,
-    QMenu
+    QMenu,
+    QStyleOptionSlider,
+    QStyle
 )
 
-# Import your canvas and audio functions
 from .visualizer_canvas import VisualizerCanvas
-from audio import open_audio_stream, read_chunk_at_position, process_live_chunk
+from audio import open_audio_stream, process_live_chunk
 from ui.template_dialog import TemplateDialog
 from ui.popups import VolumePopup
 from audio_player import AudioPlayer
-
-from mutagen import File
+import time
 
 import pyaudiowpatch as pyaudio
 
 audio_file_path = "src/audio/symphony.mp3"
+
 
 class MainWindow(QMainWindow):
 
@@ -44,7 +45,7 @@ class MainWindow(QMainWindow):
         self.setMouseTracking(True)
 
         self.is_playing = True
-        self.current_mode = "file"  # "file", "mic", or "desktop"
+        self.current_mode = "file"
         self.live_stream = None
         self.live_buffer = None
         self.audio_queue = queue.Queue()
@@ -136,7 +137,6 @@ class MainWindow(QMainWindow):
         self.open_templates_btn.clicked.connect(self.show_template_dialog)
         form_layout.addRow("Templates:", self.open_templates_btn)
 
-        # 1. Audio Source / Mode Selector (File, Microphone, Desktop Audio)
         self.source_combo = QComboBox()
         self.source_combo.addItems(["📁 Audio File", "🎙️ Microphone", "🖥️ Desktop Audio"])
         self.source_combo.setStyleSheet("""
@@ -150,20 +150,16 @@ class MainWindow(QMainWindow):
         self.source_combo.currentTextChanged.connect(self.on_audio_source_changed)
         form_layout.addRow("Change mode :", self.source_combo)
 
-        # 2. Hardware Device Selector (Populated with actual sound devices)
         self.device_combo = QComboBox()
         self.device_combo.setStyleSheet(self.source_combo.styleSheet())
         
         devices = sd.query_devices()
         for i, dev in enumerate(devices):
             if dev['max_input_channels'] > 0 or dev['max_output_channels'] > 0:
-                label = f"[{i}] {dev['name']}"
-                self.device_combo.addItem(label, userData=i)
+                self.device_combo.addItem(f"[{i}] {dev['name']}", userData=i)
                 
         self.device_combo.currentIndexChanged.connect(self.on_device_selected)
         form_layout.addRow("Select Device :", self.device_combo)
-        
-        # Hide device selector by default if starting in File mode
         self.device_combo.setVisible(True)
 
         # --- 2. VISUALIZER CANVAS ---
@@ -182,7 +178,6 @@ class MainWindow(QMainWindow):
         bar_layout.setContentsMargins(15, 0, 15, 0)
         bar_layout.setSpacing(15)
 
-        # Play / Pause Button
         self.play_btn = QPushButton("⏸")
         self.play_btn.setFixedSize(32, 32)
         self.play_btn.setStyleSheet("""
@@ -194,7 +189,6 @@ class MainWindow(QMainWindow):
         self.play_btn.clicked.connect(self.toggle_play_pause)
         bar_layout.addWidget(self.play_btn)
 
-        # Volume Icon Button with Hover Popup
         self.vol_btn = QPushButton("🔊")
         self.vol_btn.setFixedSize(30, 30)
         self.vol_btn.setStyleSheet("""
@@ -211,13 +205,11 @@ class MainWindow(QMainWindow):
         self.vol_btn.leaveEvent = self.check_hide_volume_popup
         bar_layout.addWidget(self.vol_btn)
 
-        # TIME LABEL & DURATION (Delegated to AudioPlayer via init_audio)
         self.track_duration = 0.0
         self.time_label = QLabel("0:00 / 0:00")
         self.time_label.setStyleSheet("color: #cccccc; font-size: 12px;")
         bar_layout.addWidget(self.time_label)
 
-        # Timeline Slider
         self.timeline_slider = QSlider(Qt.Orientation.Horizontal)
         self.timeline_slider.setRange(0, 1000)
         self.timeline_slider.setValue(0)
@@ -227,12 +219,10 @@ class MainWindow(QMainWindow):
             QSlider::handle:horizontal { background: #ff0000; width: 12px; height: 12px; margin: -4px 0; border-radius: 6px; }
         """)
         
-        # Connect both dragging and clicking actions
         self.timeline_slider.sliderMoved.connect(self.seek_timeline)
-        self.timeline_slider.installEventFilter(self) # Allows us to catch direct clicks on the groove
+        self.timeline_slider.installEventFilter(self)
         bar_layout.addWidget(self.timeline_slider, stretch=1)
 
-        # Settings Button (Gear Icon)
         self.settings_btn = QPushButton("⚙")
         self.settings_btn.setFixedSize(30, 30)
         self.settings_btn.setStyleSheet("""
@@ -241,7 +231,6 @@ class MainWindow(QMainWindow):
         """)
         bar_layout.addWidget(self.settings_btn)
 
-        # Now load your audio file using the modular setup we defined
         self.init_audio(audio_file_path)
 
         root_layout.addWidget(self.control_bar)
@@ -249,7 +238,6 @@ class MainWindow(QMainWindow):
 
         self.sidebar_visible = True
 
-        # Floating Hover Trigger Handle for Sidebar
         self.trigger_btn = QPushButton("▶", self)
         self.trigger_btn.setFixedWidth(24)
         self.trigger_btn.setFixedHeight(80)
@@ -262,7 +250,7 @@ class MainWindow(QMainWindow):
 
         # --- 4. PLAYBACK SYNC TIMER ---
         self.playback_timer = QTimer(self)
-        self.playback_timer.setInterval(16)  # ~60 FPS (1000ms / 60 ≈ 16ms)
+        self.playback_timer.setInterval(16)
         self.playback_timer.timeout.connect(self.update_playback_progress)
         self.playback_timer.start()
 
@@ -273,7 +261,6 @@ class MainWindow(QMainWindow):
             self.trigger_btn.move(0, y_pos)
 
     def show_volume_popup(self, event):
-        """Displays the vertical volume popup directly above the volume icon."""
         global_pos = self.vol_btn.mapToGlobal(QPoint(0, 0))
         x = global_pos.x() + (self.vol_btn.width() - self.vol_popup.width()) // 2
         y = global_pos.y() - self.vol_popup.height() - 5
@@ -281,7 +268,6 @@ class MainWindow(QMainWindow):
         self.vol_popup.show()
 
     def check_hide_volume_popup(self, event):
-        """Hides the volume popup only if the mouse isn't currently over it."""
         QTimer.singleShot(150, self._delayed_hide_check)
 
     def _delayed_hide_check(self):
@@ -310,7 +296,6 @@ class MainWindow(QMainWindow):
             self.trigger_btn.show()
         super().mouseMoveEvent(event)
 
-    # --- LIVE MEDIA CONTROLS & VISUALIZER SYNC ---
     def toggle_play_pause(self):
         if not hasattr(self, "audio_player") or not self.audio_player.is_loaded:
             return
@@ -325,14 +310,20 @@ class MainWindow(QMainWindow):
                 self.audio_player.play(start_sec=0.0)
             else:
                 self.audio_player.unpause()
+            
+            self.playback_start_wall_time = time.perf_counter()
+            self.playback_start_audio_sec = self.current_time_sec
+
             self.play_btn.setText("⏸")
             self.is_playing = True
 
     def seek_timeline(self, position):
-        """Handles scrubbing the timeline slider cleanly via AudioPlayer and updates the canvas."""
         if hasattr(self, "track_duration") and self.track_duration > 0:
             target_sec = (position / 1000.0) * self.track_duration
             self.current_time_sec = target_sec
+            
+            self.playback_start_wall_time = time.perf_counter()
+            self.playback_start_audio_sec = target_sec
             
             if hasattr(self, "audio_player"):
                 self.audio_player.seek(target_sec)
@@ -383,7 +374,6 @@ class MainWindow(QMainWindow):
         self.canvas.set_template(template_key)
 
     def format_time(self, seconds):
-        """Converts seconds into M:SS format."""
         if math.isnan(seconds) or seconds < 0:
             return "0:00"
         mins = int(seconds // 60)
@@ -391,7 +381,6 @@ class MainWindow(QMainWindow):
         return f"{mins}:{secs:02d}"
 
     def init_audio(self, file_path):
-        """Initializes the audio player, streams, and syncs the canvas."""
         self.audio_player = AudioPlayer()
         success = self.audio_player.load_file(file_path)
         
@@ -423,12 +412,11 @@ class MainWindow(QMainWindow):
                         latest_chunk = self.audio_queue.get_nowait()
 
                     if latest_chunk is not None and len(latest_chunk) > 0:
-                        # Import your modular audio function                     
                         _, binned = process_live_chunk(
                             latest_chunk, 
                             sample_rate=44100, 
                             num_bins=self.canvas.num_bars,
-                            gain=10.0  # Boost live sensitivity here
+                            gain=8.0
                         )
 
                         if binned is not None and len(binned) > 0:
@@ -444,19 +432,18 @@ class MainWindow(QMainWindow):
                     print(f"Live stream queue error: {e}")
             return
 
-        # --- EXISTING FILE MODE PROCESSING ---
         if not hasattr(self, "audio_player") or not self.audio_player.is_loaded:
             return
 
-        current_sec = self.audio_player.get_current_position()
-        if current_sec > self.track_duration:
-            current_sec = self.track_duration
-        
+        if not hasattr(self, "playback_start_wall_time"):
+            self.playback_start_wall_time = time.perf_counter()
+            self.playback_start_audio_sec = self.current_time_sec
+
+        elapsed_real_time = time.perf_counter() - self.playback_start_wall_time
+        current_sec = min(self.track_duration, self.playback_start_audio_sec + elapsed_real_time)
+
         self.current_time_sec = current_sec
-        
-        current_str = self.format_time(current_sec)
-        total_str = self.format_time(self.track_duration)
-        self.time_label.setText(f"{current_str} / {total_str}")
+        self.time_label.setText(f"{self.format_time(current_sec)} / {self.format_time(self.track_duration)}")
         
         if self.track_duration > 0 and not self.timeline_slider.isSliderDown():
             progress = int((current_sec / self.track_duration) * 1000)
@@ -488,14 +475,11 @@ class MainWindow(QMainWindow):
     def eventFilter(self, obj, event):
         if obj == self.timeline_slider and event.type() == event.Type.MouseButtonPress:
             if event.button() == Qt.MouseButton.LeftButton:
-                from PyQt6.QtWidgets import QStyle, QStyleOptionSlider
-                
                 opt = QStyleOptionSlider()
                 self.timeline_slider.initStyleOption(opt)
                 
                 pos = event.position().toPoint() if hasattr(event, 'position') else event.pos()
                 
-                # Check if the click is directly on the slider handle (thumb)
                 style = self.timeline_slider.style()
                 handle_rect = style.subControlRect(
                     QStyle.ComplexControl.CC_Slider, 
@@ -504,11 +488,9 @@ class MainWindow(QMainWindow):
                     self.timeline_slider
                 )
                 
-                # If the user clicked the handle, let the default drag behavior take over
                 if handle_rect.contains(pos):
                     return super().eventFilter(obj, event)
                 
-                # Otherwise, instantly jump/snap to the clicked position on the groove
                 val = QStyle.sliderValueFromPosition(
                     self.timeline_slider.minimum(),
                     self.timeline_slider.maximum(),
@@ -524,7 +506,6 @@ class MainWindow(QMainWindow):
         return super().eventFilter(obj, event)
 
     def stop_live_stream(self):
-        """Cleanly closes active live streams."""
         if hasattr(self, 'live_stream') and self.live_stream is not None:
             try:
                 self.live_stream.stop_stream()
@@ -534,15 +515,10 @@ class MainWindow(QMainWindow):
             self.live_stream = None
 
     def toggle_audio_source_mode(self):
-        """Switches between pre-recorded file mode and live input routing."""
-        # This hook bridges your existing toggle button state
         pass
 
     def on_audio_source_changed(self, text):
-        """Handles source change: Explicitly matches default speakers to their WASAPI loopback twin."""
         self.stop_live_stream()
-
-        import pyaudiowpatch as pyaudio
         
         if not hasattr(self, 'pyaudio_instance') or self.pyaudio_instance is None:
             self.pyaudio_instance = pyaudio.PyAudio()
@@ -550,12 +526,10 @@ class MainWindow(QMainWindow):
         is_desktop = "Desktop" in text
         is_mic = "Microphone" in text
 
-        # Block signals to prevent race conditions during list clearing
         self.device_combo.blockSignals(True)
         self.device_combo.clear()
 
         if not is_desktop and not is_mic:
-            # --- FILE MODE ---
             self.current_mode = "file"
             self.setup_file_mode_ui(enabled=True)
             self.device_combo.setVisible(False)
@@ -565,43 +539,34 @@ class MainWindow(QMainWindow):
             return
 
         if is_desktop:
-            # --- ONE-CLICK DESKTOP LOOPBACK MODE ---
-            self.current_mode = "desktop"  # <-- CRITICAL FIX: Set mode so timer processes queue
+            self.current_mode = "desktop"
             self.setup_file_mode_ui(enabled=False)
             self.device_combo.setVisible(False)
             self.device_combo.blockSignals(False)
 
             try:
-                # 1. Get default WASAPI info
                 wasapi_info = self.pyaudio_instance.get_host_api_info_by_type(pyaudio.paWASAPI)
                 default_speakers = self.pyaudio_instance.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
                 
                 target_loopback = None
-                # 2. Find the exact loopback analogue corresponding to default speakers
                 for loopback in self.pyaudio_instance.get_loopback_device_info_generator():
                     if default_speakers["name"] in loopback["name"]:
                         target_loopback = loopback
                         break
                 
-                # Fallback if name matching fails
                 if target_loopback is None:
                     target_loopback = self.pyaudio_instance.get_default_wasapi_loopback()
 
                 device_idx = target_loopback['index']
-                channels = int(target_loopback['maxInputChannels'])
-                if channels < 1:
-                    channels = 2
-                rate = int(target_loopback['defaultSampleRate'])
-                if rate <= 0:
-                    rate = 44100
+                channels = int(target_loopback['maxInputChannels']) if int(target_loopback['maxInputChannels']) >= 1 else 2
+                rate = int(target_loopback['defaultSampleRate']) if int(target_loopback['defaultSampleRate']) > 0 else 44100
 
                 self.start_audio_stream(device_idx, channels, rate, is_loopback=True)
             except Exception as e:
                 print(f"Failed to initialize explicit desktop loopback: {e}")
 
         elif is_mic:
-            # --- MICROPHONE MODE (Populates Dropdown) ---
-            self.current_mode = "mic"  # <-- CRITICAL FIX: Set mode for mic streams too
+            self.current_mode = "mic"
             self.setup_file_mode_ui(enabled=False)
             self.device_combo.setVisible(True)
 
@@ -629,7 +594,6 @@ class MainWindow(QMainWindow):
                 self.on_device_selected(self.device_combo.currentIndex())
 
     def on_device_selected(self, index):
-        """Handles manual microphone device selection from the dropdown."""
         if index < 0:
             return
 
@@ -644,28 +608,22 @@ class MainWindow(QMainWindow):
         try:
             dev_info = self.pyaudio_instance.get_device_info_by_index(device_idx)
             channels = min(2, max(1, int(dev_info['maxInputChannels'])))
-            rate = int(dev_info['defaultSampleRate'])
-            if rate <= 0:
-                rate = 44100
+            rate = int(dev_info['defaultSampleRate']) if int(dev_info['defaultSampleRate']) > 0 else 44100
 
             self.start_audio_stream(device_idx, channels, rate, is_loopback=False)
         except Exception as e:
             print(f"Failed to open microphone device {device_idx}: {e}")
 
     def start_audio_stream(self, device_idx, channels, rate, is_loopback):
-        """Unified stream spawning engine ensuring uniform float32 data flow."""
         self.stop_live_stream()
 
         self.audio_queue = queue.Queue()
         target_queue = self.audio_queue
 
         def pyaudio_callback(in_data, frame_count, time_info, status):
-            # Standardize capture directly as float32 to prevent visualizer freezing/flatline
             audio_data = np.frombuffer(in_data, dtype=np.float32).copy()
-
             if channels > 1 and audio_data.size > 0:
                 audio_data = audio_data[::channels]
-
             target_queue.put(audio_data)
             return (None, pyaudio.paContinue)
 
@@ -686,7 +644,6 @@ class MainWindow(QMainWindow):
             print(f"Stream start error on index {device_idx}: {e}")
 
     def setup_file_mode_ui(self, enabled: bool):
-        """Helper to toggle play button and timeline usability for live vs file modes."""
         has_play_btn = hasattr(self, "play_btn") and self.play_btn is not None
         has_slider = hasattr(self, "timeline_slider") and self.timeline_slider is not None
 
@@ -704,4 +661,4 @@ class MainWindow(QMainWindow):
                 self.audio_player.pause()
             if has_play_btn:
                 self.play_btn.setText("▶")
-            self.is_playing = True  # Keeps loop alive for live FFT rendering frames
+            self.is_playing = True
