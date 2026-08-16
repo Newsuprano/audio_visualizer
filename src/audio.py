@@ -1,6 +1,7 @@
 from pathlib import Path
 import numpy as np
 import soundfile as sf
+import sounddevice as sd
 
 #audio = Path("src/audio/heat_waves.wav")
 #audio = Path("src/audio/birds_of_a_feather.mp3")
@@ -51,8 +52,6 @@ def read_next_chunk(f):
     normalized_amplitude = np.log1p(raw_amplitude * 20)
     
     return positive_frequencies, normalized_amplitude
-
-import numpy as np
 
 def read_chunk_at_position(f, frame_index, chunk_size=4096, num_bins=64):
     if f is None:
@@ -142,3 +141,27 @@ def get_log_bins(frequencies, amplitudes, num_bins=64):
     final_amps = np.clip(scaled_amps, 0.0, 1.0)
 
     return np.array(binned_frequencies), final_amps
+
+def open_live_audio_stream(sample_rate=44100, channels=1):
+    """Opens a continuous live input stream from the default microphone."""
+    # We can use a queue or callback mechanism, or simply pull the latest chunk
+    return sd.InputStream(samplerate=sample_rate, channels=channels)
+
+def process_live_chunk(latest_chunk, sample_rate=44100, num_bins=64, gain=5.0):
+    """Processes a raw live audio buffer using the exact same pipeline as file mode."""
+    if latest_chunk is None or len(latest_chunk) == 0:
+        return None, None
+        
+    windowed = latest_chunk * np.hanning(len(latest_chunk))
+    fft_output = np.fft.fft(windowed)
+    
+    N = len(windowed)
+    frequencies = np.fft.fftfreq(N, d=1/sample_rate)
+
+    half_N = N // 2
+    positive_frequencies = frequencies[:half_N]
+    raw_amplitude = (2.0 / N) * np.abs(fft_output[:half_N])
+    
+    binned_freqs, binned_amps = get_log_bins(positive_frequencies, raw_amplitude * gain, num_bins)
+    
+    return binned_freqs, binned_amps

@@ -1,6 +1,9 @@
 from pathlib import Path
+import queue
 import math
 import numpy as np
+from sounddevice import WasapiSettings
+import sounddevice as sd
 from PyQt6.QtCore import QTimer, Qt, QPoint
 from PyQt6.QtGui import QColor, QPainter, QPen, QMouseEvent
 from PyQt6.QtWidgets import (
@@ -20,12 +23,14 @@ from PyQt6.QtWidgets import (
 
 # Import your canvas and audio functions
 from .visualizer_canvas import VisualizerCanvas
-from audio import open_audio_stream, read_chunk_at_position
+from audio import open_audio_stream, read_chunk_at_position, process_live_chunk
 from ui.template_dialog import TemplateDialog
 from ui.popups import VolumePopup
 from audio_player import AudioPlayer
 
 from mutagen import File
+
+import pyaudiowpatch as pyaudio
 
 audio_file_path = "src/audio/symphony.mp3"
 
@@ -39,6 +44,10 @@ class MainWindow(QMainWindow):
         self.setMouseTracking(True)
 
         self.is_playing = True
+        self.current_mode = "file"  # "file", "mic", or "desktop"
+        self.live_stream = None
+        self.live_buffer = None
+        self.audio_queue = queue.Queue()
 
         # --- ROOT CONTAINER & LAYOUT ---
         root_widget = QWidget(self)
@@ -106,8 +115,10 @@ class MainWindow(QMainWindow):
 
         self.style_combo = QComboBox()
         self.style_combo.addItems([
-            "Circular", "Linear", "Symmetric Waveform", 
-            "Radial Burst", "Equalizer Orbit", "Dual Wave",
+            "Circular", "Linear", 
+            "Symmetric Waveform", 
+            "Equalizer Orbit", 
+            "Dual Wave",
         ])
         self.style_combo.currentTextChanged.connect(self.on_style_changed)
         form_layout.addRow("Style:", self.style_combo)
@@ -124,6 +135,36 @@ class MainWindow(QMainWindow):
         """)
         self.open_templates_btn.clicked.connect(self.show_template_dialog)
         form_layout.addRow("Templates:", self.open_templates_btn)
+
+        # 1. Audio Source / Mode Selector (File, Microphone, Desktop Audio)
+        self.source_combo = QComboBox()
+        self.source_combo.addItems(["📁 Audio File", "🎙️ Microphone", "🖥️ Desktop Audio"])
+        self.source_combo.setStyleSheet("""
+            QComboBox {
+                background-color: #2d2d2d; color: #00ff96; border: 1px solid #444; 
+                padding: 4px 8px; border-radius: 4px; font-weight: bold;
+            }
+            QComboBox:hover { background-color: #353535; border-color: #00ff96; }
+            QComboBox::drop-down { border: 0px; }
+        """)
+        self.source_combo.currentTextChanged.connect(self.on_audio_source_changed)
+        form_layout.addRow("Change mode :", self.source_combo)
+
+        # 2. Hardware Device Selector (Populated with actual sound devices)
+        self.device_combo = QComboBox()
+        self.device_combo.setStyleSheet(self.source_combo.styleSheet())
+        
+        devices = sd.query_devices()
+        for i, dev in enumerate(devices):
+            if dev['max_input_channels'] > 0 or dev['max_output_channels'] > 0:
+                label = f"[{i}] {dev['name']}"
+                self.device_combo.addItem(label, userData=i)
+                
+        self.device_combo.currentIndexChanged.connect(self.on_device_selected)
+        form_layout.addRow("Select Device :", self.device_combo)
+        
+        # Hide device selector by default if starting in File mode
+        self.device_combo.setVisible(True)
 
         # --- 2. VISUALIZER CANVAS ---
         self.canvas = VisualizerCanvas(root_widget)
@@ -324,8 +365,11 @@ class MainWindow(QMainWindow):
 
     def on_style_changed(self, text):
         style_map = {
-            "Circular": "circular", "Linear": "linear", "Symmetric Waveform": "symmetric",
-            "Radial Burst": "burst", "Equalizer Orbit": "orbit", "Dual Wave": "dual_wave",
+            "Circular": "circular", 
+            "Linear": "linear", 
+            "Symmetric Waveform": "symmetric",
+            "Equalizer Orbit": "orbit", 
+            "Dual Wave": "dual_wave",
         }
         style_key = style_map.get(text, "circular")
         self.canvas.set_style(style_key)
@@ -368,8 +412,40 @@ class MainWindow(QMainWindow):
             self.time_label.setText(f"0:00 / {total_str}")
 
     def update_playback_progress(self):
-        """Continuously syncs audio position via AudioPlayer and pushes data to the canvas."""
-        if not self.is_playing or not hasattr(self, "audio_player") or not self.audio_player.is_loaded:
+        if not self.is_playing:
+            return
+
+        if self.current_mode in ["mic", "desktop"]:
+            if hasattr(self, "audio_queue") and self.audio_queue is not None:
+                try:
+                    latest_chunk = None
+                    while not self.audio_queue.empty():
+                        latest_chunk = self.audio_queue.get_nowait()
+
+                    if latest_chunk is not None and len(latest_chunk) > 0:
+                        # Import your modular audio function                     
+                        _, binned = process_live_chunk(
+                            latest_chunk, 
+                            sample_rate=44100, 
+                            num_bins=self.canvas.num_bars,
+                            gain=10.0  # Boost live sensitivity here
+                        )
+
+                        if binned is not None and len(binned) > 0:
+                            if not hasattr(self, "previous_binned") or len(self.previous_binned) != len(binned):
+                                self.previous_binned = binned
+                            else:
+                                binned = 0.4 * binned + 0.6 * self.previous_binned
+                                self.previous_binned = binned
+
+                            self.canvas.push_amplitudes(binned)
+                            self.canvas.update()
+                except Exception as e:
+                    print(f"Live stream queue error: {e}")
+            return
+
+        # --- EXISTING FILE MODE PROCESSING ---
+        if not hasattr(self, "audio_player") or not self.audio_player.is_loaded:
             return
 
         current_sec = self.audio_player.get_current_position()
@@ -396,6 +472,7 @@ class MainWindow(QMainWindow):
                 audio_stream=self.audio_stream
             )
             self.canvas.push_amplitudes(amplitudes)
+            self.canvas.update()
 
     def update_volume(self, value):
         if hasattr(self, "audio_player"):
@@ -445,3 +522,186 @@ class MainWindow(QMainWindow):
                 return True
                 
         return super().eventFilter(obj, event)
+
+    def stop_live_stream(self):
+        """Cleanly closes active live streams."""
+        if hasattr(self, 'live_stream') and self.live_stream is not None:
+            try:
+                self.live_stream.stop_stream()
+                self.live_stream.close()
+            except Exception:
+                pass
+            self.live_stream = None
+
+    def toggle_audio_source_mode(self):
+        """Switches between pre-recorded file mode and live input routing."""
+        # This hook bridges your existing toggle button state
+        pass
+
+    def on_audio_source_changed(self, text):
+        """Handles source change: Explicitly matches default speakers to their WASAPI loopback twin."""
+        self.stop_live_stream()
+
+        import pyaudiowpatch as pyaudio
+        
+        if not hasattr(self, 'pyaudio_instance') or self.pyaudio_instance is None:
+            self.pyaudio_instance = pyaudio.PyAudio()
+
+        is_desktop = "Desktop" in text
+        is_mic = "Microphone" in text
+
+        # Block signals to prevent race conditions during list clearing
+        self.device_combo.blockSignals(True)
+        self.device_combo.clear()
+
+        if not is_desktop and not is_mic:
+            # --- FILE MODE ---
+            self.current_mode = "file"
+            self.setup_file_mode_ui(enabled=True)
+            self.device_combo.setVisible(False)
+            self.device_combo.blockSignals(False)
+            if hasattr(self, "audio_player") and self.audio_player.is_loaded:
+                self.audio_player.unpause()
+            return
+
+        if is_desktop:
+            # --- ONE-CLICK DESKTOP LOOPBACK MODE ---
+            self.current_mode = "desktop"  # <-- CRITICAL FIX: Set mode so timer processes queue
+            self.setup_file_mode_ui(enabled=False)
+            self.device_combo.setVisible(False)
+            self.device_combo.blockSignals(False)
+
+            try:
+                # 1. Get default WASAPI info
+                wasapi_info = self.pyaudio_instance.get_host_api_info_by_type(pyaudio.paWASAPI)
+                default_speakers = self.pyaudio_instance.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
+                
+                target_loopback = None
+                # 2. Find the exact loopback analogue corresponding to default speakers
+                for loopback in self.pyaudio_instance.get_loopback_device_info_generator():
+                    if default_speakers["name"] in loopback["name"]:
+                        target_loopback = loopback
+                        break
+                
+                # Fallback if name matching fails
+                if target_loopback is None:
+                    target_loopback = self.pyaudio_instance.get_default_wasapi_loopback()
+
+                device_idx = target_loopback['index']
+                channels = int(target_loopback['maxInputChannels'])
+                if channels < 1:
+                    channels = 2
+                rate = int(target_loopback['defaultSampleRate'])
+                if rate <= 0:
+                    rate = 44100
+
+                self.start_audio_stream(device_idx, channels, rate, is_loopback=True)
+            except Exception as e:
+                print(f"Failed to initialize explicit desktop loopback: {e}")
+
+        elif is_mic:
+            # --- MICROPHONE MODE (Populates Dropdown) ---
+            self.current_mode = "mic"  # <-- CRITICAL FIX: Set mode for mic streams too
+            self.setup_file_mode_ui(enabled=False)
+            self.device_combo.setVisible(True)
+
+            target_index = None
+            try:
+                device_count = self.pyaudio_instance.get_device_count()
+                for i in range(device_count):
+                    dev_info = self.pyaudio_instance.get_device_info_by_index(i)
+                    dev_name = dev_info['name']
+                    if "loopback" not in dev_name.lower() and dev_info['maxInputChannels'] > 0:
+                        self.device_combo.addItem(f"[{i}] {dev_name}", userData=i)
+                        if target_index is None:
+                            target_index = i
+
+                if target_index is not None:
+                    for idx in range(self.device_combo.count()):
+                        if self.device_combo.itemData(idx) == target_index:
+                            self.device_combo.setCurrentIndex(idx)
+                            break
+            except Exception as e:
+                print(f"Error enumerating microphones: {e}")
+
+            self.device_combo.blockSignals(False)
+            if self.device_combo.count() > 0:
+                self.on_device_selected(self.device_combo.currentIndex())
+
+    def on_device_selected(self, index):
+        """Handles manual microphone device selection from the dropdown."""
+        if index < 0:
+            return
+
+        current_mode_text = self.source_combo.currentText() if hasattr(self, 'source_combo') else ""
+        if "Microphone" not in current_mode_text:
+            return
+
+        device_idx = self.device_combo.itemData(index)
+        if device_idx is None:
+            return
+
+        try:
+            dev_info = self.pyaudio_instance.get_device_info_by_index(device_idx)
+            channels = min(2, max(1, int(dev_info['maxInputChannels'])))
+            rate = int(dev_info['defaultSampleRate'])
+            if rate <= 0:
+                rate = 44100
+
+            self.start_audio_stream(device_idx, channels, rate, is_loopback=False)
+        except Exception as e:
+            print(f"Failed to open microphone device {device_idx}: {e}")
+
+    def start_audio_stream(self, device_idx, channels, rate, is_loopback):
+        """Unified stream spawning engine ensuring uniform float32 data flow."""
+        self.stop_live_stream()
+
+        self.audio_queue = queue.Queue()
+        target_queue = self.audio_queue
+
+        def pyaudio_callback(in_data, frame_count, time_info, status):
+            # Standardize capture directly as float32 to prevent visualizer freezing/flatline
+            audio_data = np.frombuffer(in_data, dtype=np.float32).copy()
+
+            if channels > 1 and audio_data.size > 0:
+                audio_data = audio_data[::channels]
+
+            target_queue.put(audio_data)
+            return (None, pyaudio.paContinue)
+
+        try:
+            self.live_stream = self.pyaudio_instance.open(
+                format=pyaudio.paFloat32,
+                channels=channels,
+                rate=rate,
+                input=True,
+                input_device_index=device_idx,
+                frames_per_buffer=1024,
+                stream_callback=pyaudio_callback
+            )
+            self.live_stream.start_stream()
+            if hasattr(self, 'playback_timer'):
+                self.playback_timer.start()
+        except Exception as e:
+            print(f"Stream start error on index {device_idx}: {e}")
+
+    def setup_file_mode_ui(self, enabled: bool):
+        """Helper to toggle play button and timeline usability for live vs file modes."""
+        has_play_btn = hasattr(self, "play_btn") and self.play_btn is not None
+        has_slider = hasattr(self, "timeline_slider") and self.timeline_slider is not None
+
+        if has_play_btn:
+            self.play_btn.setEnabled(enabled)
+        if has_slider:
+            self.timeline_slider.setEnabled(enabled)
+
+        if enabled:
+            if has_play_btn:
+                self.play_btn.setText("⏸")
+            self.is_playing = True
+        else:
+            if hasattr(self, "audio_player") and self.audio_player.is_loaded:
+                self.audio_player.pause()
+            if has_play_btn:
+                self.play_btn.setText("▶")
+            self.is_playing = True  # Keeps loop alive for live FFT rendering frames
