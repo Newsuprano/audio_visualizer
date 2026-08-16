@@ -14,15 +14,20 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QFormLayout,
     QSizePolicy,
-    QFrame
+    QFrame,
+    QMenu
 )
-import pygame
 
 # Import your canvas and audio functions
 from .visualizer_canvas import VisualizerCanvas
 from audio import open_audio_stream, read_chunk_at_position
 from ui.template_dialog import TemplateDialog
+from ui.popups import VolumePopup
+from audio_player import AudioPlayer
 
+from mutagen import File
+
+audio_file_path = "src/audio/symphony.mp3"
 
 class MainWindow(QMainWindow):
 
@@ -31,15 +36,19 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle("Custom Audio Visualizer Studio")
         self.resize(1100, 700)
-        
-        # Enable mouse tracking on the main window
         self.setMouseTracking(True)
+
+        self.is_playing = True
 
         # --- ROOT CONTAINER & LAYOUT ---
         root_widget = QWidget(self)
-        root_layout = QHBoxLayout(root_widget)
+        root_layout = QVBoxLayout(root_widget)
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
+
+        content_layout = QHBoxLayout()
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
 
         # --- 1. PARAMETER PANEL (Sidebar) ---
         self.sidebar = QFrame(root_widget)
@@ -49,7 +58,6 @@ class MainWindow(QMainWindow):
         
         sidebar_layout = QVBoxLayout(self.sidebar)
         
-        # Header layout with a collapse button
         header_layout = QHBoxLayout()
         title_label = QLabel("<b>Parameters</b>")
         title_label.setStyleSheet("font-size: 14px; color: #00ff96;")
@@ -69,11 +77,9 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(self.hide_btn)
         sidebar_layout.addLayout(header_layout)
 
-        # Form layout for your controls
         form_layout = QFormLayout()
         sidebar_layout.addLayout(form_layout)
 
-        # Slider: Number of Bars
         self.bars_slider = QSlider(Qt.Orientation.Horizontal)
         self.bars_slider.setRange(16, 128)
         self.bars_slider.setValue(64)
@@ -82,7 +88,6 @@ class MainWindow(QMainWindow):
         form_layout.addRow("Bar Count:", self.bars_slider)
         form_layout.addRow("", self.bars_label)
 
-        # Slider: Inner Radius
         self.radius_slider = QSlider(Qt.Orientation.Horizontal)
         self.radius_slider.setRange(50, 300)
         self.radius_slider.setValue(120)
@@ -91,7 +96,6 @@ class MainWindow(QMainWindow):
         form_layout.addRow("Inner Radius:", self.radius_slider)
         form_layout.addRow("", self.radius_label)
 
-        # Slider: Max Bar Length
         self.length_slider = QSlider(Qt.Orientation.Horizontal)
         self.length_slider.setRange(50, 400)
         self.length_slider.setValue(180)
@@ -100,35 +104,23 @@ class MainWindow(QMainWindow):
         form_layout.addRow("Max Bar Height:", self.length_slider)
         form_layout.addRow("", self.length_label)
 
-        # Dropdown: Visualizer Style Selection
         self.style_combo = QComboBox()
         self.style_combo.addItems([
-            "Circular",
-            "Linear",
-            "Symmetric Waveform",
-            "Equalizer Orbit",
-            "Dual Wave",
+            "Circular", "Linear", "Symmetric Waveform", 
+            "Radial Burst", "Equalizer Orbit", "Dual Wave",
         ])
         self.style_combo.currentTextChanged.connect(self.on_style_changed)
         form_layout.addRow("Style:", self.style_combo)
 
-        # Template Dialog
         self.template_dialog = TemplateDialog(self)
         self.template_dialog.template_selected.connect(self.apply_template_selection)
 
         self.open_templates_btn = QPushButton("Templates Menu")
         self.open_templates_btn.setStyleSheet("""
             QPushButton {
-                background-color: #2d2d2d;
-                color: white;
-                border: 1px solid #444;
-                padding: 8px;
-                border-radius: 4px;
+                background-color: #2d2d2d; color: white; border: 1px solid #444; padding: 8px; border-radius: 4px;
             }
-            QPushButton:hover {
-                background-color: #353535;
-                border: 1px solid #00ff96;
-            }
+            QPushButton:hover { background-color: #353535; border: 1px solid #00ff96; }
         """)
         self.open_templates_btn.clicked.connect(self.show_template_dialog)
         form_layout.addRow("Templates:", self.open_templates_btn)
@@ -137,46 +129,128 @@ class MainWindow(QMainWindow):
         self.canvas = VisualizerCanvas(root_widget)
         self.canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-        # Add sidebar and canvas to root layout
-        root_layout.addWidget(self.sidebar)
-        root_layout.addWidget(self.canvas)
+        content_layout.addWidget(self.sidebar)
+        content_layout.addWidget(self.canvas)
+        root_layout.addLayout(content_layout)
+
+        # --- 3. BOTTOM MEDIA CONTROL BAR ---
+        self.control_bar = QFrame(root_widget)
+        self.control_bar.setFixedHeight(50)
+        self.control_bar.setStyleSheet("background-color: #181818; border-top: 1px solid #282828;")
+        bar_layout = QHBoxLayout(self.control_bar)
+        bar_layout.setContentsMargins(15, 0, 15, 0)
+        bar_layout.setSpacing(15)
+
+        # Play / Pause Button
+        self.play_btn = QPushButton("⏸")
+        self.play_btn.setFixedSize(32, 32)
+        self.play_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #cc0000; color: white; border-radius: 16px; font-weight: bold; border: none;
+            }
+            QPushButton:hover { background-color: #e60000; }
+        """)
+        self.play_btn.clicked.connect(self.toggle_play_pause)
+        bar_layout.addWidget(self.play_btn)
+
+        # Volume Icon Button with Hover Popup
+        self.vol_btn = QPushButton("🔊")
+        self.vol_btn.setFixedSize(30, 30)
+        self.vol_btn.setStyleSheet("""
+            QPushButton { background-color: transparent; color: #cccccc; font-size: 16px; border: none; }
+            QPushButton:hover { color: white; }
+        """)
         
+        self.vol_popup = VolumePopup(self)
+        self.vol_popup.hide()
+        self.vol_popup.slider.setValue(50)
+        self.vol_popup.slider.valueChanged.connect(self.update_volume)
+        
+        self.vol_btn.enterEvent = self.show_volume_popup
+        self.vol_btn.leaveEvent = self.check_hide_volume_popup
+        bar_layout.addWidget(self.vol_btn)
+
+        # TIME LABEL & DURATION (Delegated to AudioPlayer via init_audio)
+        self.track_duration = 0.0
+        self.time_label = QLabel("0:00 / 0:00")
+        self.time_label.setStyleSheet("color: #cccccc; font-size: 12px;")
+        bar_layout.addWidget(self.time_label)
+
+        # Timeline Slider
+        self.timeline_slider = QSlider(Qt.Orientation.Horizontal)
+        self.timeline_slider.setRange(0, 1000)
+        self.timeline_slider.setValue(0)
+        self.timeline_slider.setStyleSheet("""
+            QSlider::groove:horizontal { background: #444; height: 4px; border-radius: 2px; }
+            QSlider::sub-page:horizontal { background: #cc0000; height: 4px; border-radius: 2px; }
+            QSlider::handle:horizontal { background: #ff0000; width: 12px; height: 12px; margin: -4px 0; border-radius: 6px; }
+        """)
+        
+        # Connect both dragging and clicking actions
+        self.timeline_slider.sliderMoved.connect(self.seek_timeline)
+        self.timeline_slider.installEventFilter(self) # Allows us to catch direct clicks on the groove
+        bar_layout.addWidget(self.timeline_slider, stretch=1)
+
+        # Settings Button (Gear Icon)
+        self.settings_btn = QPushButton("⚙")
+        self.settings_btn.setFixedSize(30, 30)
+        self.settings_btn.setStyleSheet("""
+            QPushButton { background-color: transparent; color: #cccccc; font-size: 16px; border: none; }
+            QPushButton:hover { color: white; }
+        """)
+        bar_layout.addWidget(self.settings_btn)
+
+        # Now load your audio file using the modular setup we defined
+        self.init_audio(audio_file_path)
+
+        root_layout.addWidget(self.control_bar)
         self.setCentralWidget(root_widget)
+
         self.sidebar_visible = True
 
-        # --- 3. HOVER TRIGGER RECTANGLE (Arrow Handle) ---
-        # A floating button styled as a slim edge handle, positioned as a child overlay
+        # Floating Hover Trigger Handle for Sidebar
         self.trigger_btn = QPushButton("▶", self)
         self.trigger_btn.setFixedWidth(24)
         self.trigger_btn.setFixedHeight(80)
         self.trigger_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #2a2a2a;
-                color: #00ff96;
-                border: 1px solid #444;
-                border-top-right-radius: 4px;
-                border-bottom-right-radius: 4px;
-                font-size: 12px;
-            }
-            QPushButton:hover {
-                background-color: #353535;
-                border-color: #00ff96;
-            }
+            QPushButton { background-color: #2a2a2a; color: #00ff96; border: 1px solid #444; border-top-right-radius: 4px; border-bottom-right-radius: 4px; }
+            QPushButton:hover { background-color: #353535; border-color: #00ff96; }
         """)
-        self.trigger_btn.hide()  # Hidden by default when sidebar is visible
+        self.trigger_btn.hide()
         self.trigger_btn.clicked.connect(self.show_sidebar)
-        self.trigger_btn.raise_()  # Ensure it renders on top of the canvas
+
+        # --- 4. PLAYBACK SYNC TIMER ---
+        self.playback_timer = QTimer(self)
+        self.playback_timer.setInterval(16)  # ~60 FPS (1000ms / 60 ≈ 16ms)
+        self.playback_timer.timeout.connect(self.update_playback_progress)
+        self.playback_timer.start()
 
     def resizeEvent(self, event):
-        """Keep the hover handle vertically centered on the left edge when resized."""
         super().resizeEvent(event)
         if hasattr(self, 'trigger_btn'):
-            # Position it vertically centered on the far left edge (x=0)
-            y_pos = (self.height() - self.trigger_btn.height()) // 2
+            y_pos = (self.height() - self.trigger_btn.height() - self.control_bar.height()) // 2
             self.trigger_btn.move(0, y_pos)
 
+    def show_volume_popup(self, event):
+        """Displays the vertical volume popup directly above the volume icon."""
+        global_pos = self.vol_btn.mapToGlobal(QPoint(0, 0))
+        x = global_pos.x() + (self.vol_btn.width() - self.vol_popup.width()) // 2
+        y = global_pos.y() - self.vol_popup.height() - 5
+        self.vol_popup.move(x, y)
+        self.vol_popup.show()
+
+    def check_hide_volume_popup(self, event):
+        """Hides the volume popup only if the mouse isn't currently over it."""
+        QTimer.singleShot(150, self._delayed_hide_check)
+
+    def _delayed_hide_check(self):
+        if hasattr(self, "vol_popup") and hasattr(self, "vol_btn"):
+            is_over_popup = self.vol_popup.underMouse() or self.vol_popup.rect().contains(self.vol_popup.mapFromGlobal(self.cursor().pos()))
+            is_over_btn = self.vol_btn.underMouse()
+            if not is_over_popup and not is_over_btn:
+                self.vol_popup.hide()
+
     def hide_sidebar(self):
-        """Collapses the sidebar and reveals the edge handle."""
         self.sidebar.setVisible(False)
         self.sidebar_visible = False
         self.trigger_btn.show()
@@ -184,7 +258,6 @@ class MainWindow(QMainWindow):
         self.canvas.update()
 
     def show_sidebar(self):
-        """Expands the sidebar and hides the edge handle."""
         self.trigger_btn.hide()
         self.sidebar.setVisible(True)
         self.sidebar_visible = True
@@ -192,17 +265,51 @@ class MainWindow(QMainWindow):
         self.canvas.update()
 
     def mouseMoveEvent(self, event: QMouseEvent):
-        """Triggers the handle to appear when hovering near the left edge if sidebar is hidden."""
-        if not self.sidebar_visible:
-            # If mouse is within 25px of the left edge, make sure the handle is visible/interactive
-            if event.pos().x() <= 25:
-                self.trigger_btn.show()
-            else:
-                # Optional: auto-hide the trigger handle if user moves away from the edge
-                pass
+        if not self.sidebar_visible and event.pos().x() <= 25:
+            self.trigger_btn.show()
         super().mouseMoveEvent(event)
 
-    # Slot functions to link UI controls live to the canvas
+    # --- LIVE MEDIA CONTROLS & VISUALIZER SYNC ---
+    def toggle_play_pause(self):
+        if not hasattr(self, "audio_player") or not self.audio_player.is_loaded:
+            return
+
+        if self.is_playing:
+            self.audio_player.pause()
+            self.play_btn.setText("▶")
+            self.is_playing = False
+        else:
+            if self.current_time_sec >= self.track_duration:
+                self.current_time_sec = 0.0
+                self.audio_player.play(start_sec=0.0)
+            else:
+                self.audio_player.unpause()
+            self.play_btn.setText("⏸")
+            self.is_playing = True
+
+    def seek_timeline(self, position):
+        """Handles scrubbing the timeline slider cleanly via AudioPlayer and updates the canvas."""
+        if hasattr(self, "track_duration") and self.track_duration > 0:
+            target_sec = (position / 1000.0) * self.track_duration
+            self.current_time_sec = target_sec
+            
+            if hasattr(self, "audio_player"):
+                self.audio_player.seek(target_sec)
+                if not self.is_playing:
+                    self.audio_player.pause()
+            
+            self.time_label.setText(f"{self.format_time(target_sec)} / {self.format_time(self.track_duration)}")
+            
+            if hasattr(self.canvas, "seek_to_time") and hasattr(self, "audio_stream") and self.audio_stream is not None:
+                self.canvas.seek_to_time(target_sec)
+                amplitudes = self.audio_player.get_amplitudes_at_time(
+                    target_sec,
+                    chunk_size=self.canvas.chunk_size,
+                    num_bins=self.canvas.num_bars,
+                    audio_stream=self.audio_stream
+                )
+                self.canvas.push_amplitudes(amplitudes)
+
     def update_bar_count(self, value):
         self.canvas.num_bars = value
         self.bars_label.setText(str(value))
@@ -217,11 +324,8 @@ class MainWindow(QMainWindow):
 
     def on_style_changed(self, text):
         style_map = {
-            "Circular": "circular",
-            "Linear": "linear",
-            "Symmetric Waveform": "symmetric",
-            "Equalizer Orbit": "orbit",
-            "Dual Wave": "dual_wave",
+            "Circular": "circular", "Linear": "linear", "Symmetric Waveform": "symmetric",
+            "Radial Burst": "burst", "Equalizer Orbit": "orbit", "Dual Wave": "dual_wave",
         }
         style_key = style_map.get(text, "circular")
         self.canvas.set_style(style_key)
@@ -233,3 +337,111 @@ class MainWindow(QMainWindow):
 
     def apply_template_selection(self, template_key):
         self.canvas.set_template(template_key)
+
+    def format_time(self, seconds):
+        """Converts seconds into M:SS format."""
+        if math.isnan(seconds) or seconds < 0:
+            return "0:00"
+        mins = int(seconds // 60)
+        secs = int(seconds % 60)
+        return f"{mins}:{secs:02d}"
+
+    def init_audio(self, file_path):
+        """Initializes the audio player, streams, and syncs the canvas."""
+        self.audio_player = AudioPlayer()
+        success = self.audio_player.load_file(file_path)
+        
+        if success:
+            self.track_duration = self.audio_player.get_duration()
+            self.current_time_sec = 0.0
+
+            self.audio_player.set_volume(50.0)
+            
+            self.audio_stream = open_audio_stream(file_path)
+            self.canvas.set_audio_source(self.audio_stream)
+            
+            self.audio_player.play(start_sec=0.0)
+            self.is_playing = True
+            self.play_btn.setText("⏸")
+
+            total_str = self.format_time(self.track_duration)
+            self.time_label.setText(f"0:00 / {total_str}")
+
+    def update_playback_progress(self):
+        """Continuously syncs audio position via AudioPlayer and pushes data to the canvas."""
+        if not self.is_playing or not hasattr(self, "audio_player") or not self.audio_player.is_loaded:
+            return
+
+        current_sec = self.audio_player.get_current_position()
+        if current_sec > self.track_duration:
+            current_sec = self.track_duration
+        
+        self.current_time_sec = current_sec
+        
+        current_str = self.format_time(current_sec)
+        total_str = self.format_time(self.track_duration)
+        self.time_label.setText(f"{current_str} / {total_str}")
+        
+        if self.track_duration > 0 and not self.timeline_slider.isSliderDown():
+            progress = int((current_sec / self.track_duration) * 1000)
+            self.timeline_slider.blockSignals(True)
+            self.timeline_slider.setValue(progress)
+            self.timeline_slider.blockSignals(False)
+        
+        if hasattr(self, "audio_stream") and self.audio_stream is not None:
+            amplitudes = self.audio_player.get_amplitudes_at_time(
+                current_sec,
+                chunk_size=self.canvas.chunk_size,
+                num_bins=self.canvas.num_bars,
+                audio_stream=self.audio_stream
+            )
+            self.canvas.push_amplitudes(amplitudes)
+
+    def update_volume(self, value):
+        if hasattr(self, "audio_player"):
+            self.audio_player.set_volume(value)
+            
+        if value == 0:
+            self.vol_btn.setText("🔇")
+        elif value < 50:
+            self.vol_btn.setText("🔉")
+        else:
+            self.vol_btn.setText("🔊")
+
+    def eventFilter(self, obj, event):
+        if obj == self.timeline_slider and event.type() == event.Type.MouseButtonPress:
+            if event.button() == Qt.MouseButton.LeftButton:
+                from PyQt6.QtWidgets import QStyle, QStyleOptionSlider
+                
+                opt = QStyleOptionSlider()
+                self.timeline_slider.initStyleOption(opt)
+                
+                pos = event.position().toPoint() if hasattr(event, 'position') else event.pos()
+                
+                # Check if the click is directly on the slider handle (thumb)
+                style = self.timeline_slider.style()
+                handle_rect = style.subControlRect(
+                    QStyle.ComplexControl.CC_Slider, 
+                    opt, 
+                    QStyle.SubControl.SC_SliderHandle, 
+                    self.timeline_slider
+                )
+                
+                # If the user clicked the handle, let the default drag behavior take over
+                if handle_rect.contains(pos):
+                    return super().eventFilter(obj, event)
+                
+                # Otherwise, instantly jump/snap to the clicked position on the groove
+                val = QStyle.sliderValueFromPosition(
+                    self.timeline_slider.minimum(),
+                    self.timeline_slider.maximum(),
+                    pos.x(),
+                    self.timeline_slider.width(),
+                    opt.upsideDown
+                )
+                
+                self.timeline_slider.setValue(val)
+                self.seek_timeline(val)
+                return True
+                
+        return super().eventFilter(obj, event)

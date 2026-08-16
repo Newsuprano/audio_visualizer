@@ -4,11 +4,11 @@ import soundfile as sf
 
 #audio = Path("src/audio/heat_waves.wav")
 #audio = Path("src/audio/birds_of_a_feather.mp3")
-#audio = Path("src/audio/symphony.mp3")
-audio = Path("src/audio/krunk.mp3")
+audio = Path("src/audio/symphony.mp3")
+#audio = Path("src/audio/krunk.mp3")
 
-def open_audio_stream():
-    audio_file = Path(audio)
+def open_audio_stream(audio_file_path):
+    audio_file = Path(audio_file_path)
     if audio_file.is_file():
         # Open the file persistently in read mode
         f = sf.SoundFile(audio_file)
