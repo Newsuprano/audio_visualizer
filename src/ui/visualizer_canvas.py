@@ -1,6 +1,6 @@
 import math
 import numpy as np
-from PyQt6.QtCore import QTimer, Qt
+from PyQt6.QtCore import QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter
 from PyQt6.QtWidgets import QWidget, QSizePolicy
 
@@ -11,6 +11,8 @@ from audio import read_chunk_at_position
 
 
 class VisualizerCanvas(QWidget):
+
+    position_changed = pyqtSignal(int, int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -23,7 +25,12 @@ class VisualizerCanvas(QWidget):
         self.num_bars = 64
         self.inner_radius = 120
         self.max_bar_length = 180
-        self.bar_width = 3
+        self.bar_width = 10 
+        self.gap_size = 4
+        self.force_squares = False  # <-- Added flag for square blocks toggle
+
+        self.current_amplitudes = np.zeros(self.num_bars)
+        self.target_amplitudes = np.zeros(self.num_bars)
         
         self.visualizer_style = "circular"
         
@@ -115,6 +122,35 @@ class VisualizerCanvas(QWidget):
         self.updateGeometry()
         self.update()
 
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = True
+            self._drag_start_pos = event.position()
+            self._initial_offset_x = self.offset_x
+            self._initial_offset_y = self.offset_y
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if getattr(self, '_dragging', False):
+            delta = event.position() - self._drag_start_pos
+            self.offset_x = int(self._initial_offset_x + delta.x())
+            self.offset_y = int(self._initial_offset_y + delta.y())
+            self.update()
+            event.accept()
+            self.position_changed.emit(int(self.offset_x), int(self.offset_y))
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = False
+            event.accept()
+
+    def set_offset(self, x, y):
+        """Manually sets visualizer offsets from the sidebar inputs."""
+        if self.offset_x != x or self.offset_y != y:
+            self.offset_x = x
+            self.offset_y = y
+            self.update()
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -123,9 +159,14 @@ class VisualizerCanvas(QWidget):
         width = self.width()
         height = self.height()
 
-        amplitudes = self.current_amplitudes
-        num_bars = len(amplitudes)
-        if num_bars == 0 or self.num_bars <= 0:
+        if len(self.current_amplitudes) == 0 or self.num_bars <= 0:
+            return
+
+        # Slice the amplitudes array to respect your bar-count slider
+        amplitudes = self.current_amplitudes[:self.num_bars]
+        active_count = len(amplitudes)
+        
+        if active_count == 0:
             return
 
         center_x = (width // 2) + getattr(self, 'offset_x', 0)
@@ -141,42 +182,43 @@ class VisualizerCanvas(QWidget):
 
                 self.current_template.draw_item(
                     painter, center_x, center_y, bar_height, angle_rad, color, self.bar_width, 
-                    symmetric=False, inner_radius=self.inner_radius
+                    symmetric=False, inner_radius=self.inner_radius, 
+                    gap_size=self.gap_size, force_squares=self.force_squares
                 )
 
         # --- 2. LINEAR STYLE ---
         elif self.visualizer_style == "linear":
-            total_spacing_space = width * 0.8
-            start_margin_x = int(width * 0.1)
-            column_width = int(total_spacing_space / self.num_bars)
-            actual_bar_width = max(2, int(column_width * 0.75))
-            base_y = int(height * 0.8)
+            # Include offset_y so the Y-axis position controls actually move it up and down
+            base_y = int(height * 0.8) + getattr(self, 'offset_y', 0)
+            
+            total_block_width = active_count * (self.bar_width + self.gap_size) - self.gap_size
+            start_x = (width - total_block_width) // 2 + getattr(self, 'offset_x', 0)
 
             for idx, am in enumerate(amplitudes):
                 bar_height = self._get_smoothed_height(idx, am)
-                bar_x = start_margin_x + (idx * column_width) + (column_width // 2)
+                bar_x = start_x + (idx * (self.bar_width + self.gap_size))
                 color = self._get_color(idx)
 
                 self.current_template.draw_item(
-                    painter, bar_x, base_y, bar_height, None, color, actual_bar_width, 
-                    symmetric=False, inner_radius=self.inner_radius
+                    painter, bar_x, base_y, bar_height, None, color, self.bar_width, 
+                    symmetric=False, inner_radius=self.inner_radius, 
+                    gap_size=self.gap_size, force_squares=self.force_squares
                 )
 
         # --- 3. SYMMETRIC WAVEFORM STYLE ---
         elif self.visualizer_style == "symmetric":
-            total_spacing_space = width * 0.8
-            start_margin_x = int(width * 0.1)
-            column_width = int(total_spacing_space / self.num_bars)
-            actual_bar_width = max(2, int(column_width * 0.75))
+            total_block_width = active_count * (self.bar_width + self.gap_size) - self.gap_size
+            start_x = (width - total_block_width) // 2 + getattr(self, 'offset_x', 0)
 
             for idx, am in enumerate(amplitudes):
                 bar_height = self._get_smoothed_height(idx, am)
-                bar_x = start_margin_x + (idx * column_width) + (column_width // 2)
+                bar_x = start_x + (idx * (self.bar_width + self.gap_size))
                 color = self._get_color(idx)
 
                 self.current_template.draw_item(
-                    painter, bar_x, center_y, bar_height, None, color, actual_bar_width, 
-                    symmetric=True, inner_radius=self.inner_radius
+                    painter, bar_x, center_y, bar_height, None, color, self.bar_width, 
+                    symmetric=True, inner_radius=self.inner_radius, 
+                    gap_size=self.gap_size, force_squares=self.force_squares
                 )
 
         # --- 4. EQUALIZER ORBIT STYLE ---
@@ -191,7 +233,8 @@ class VisualizerCanvas(QWidget):
 
                 self.current_template.draw_item(
                     painter, center_x, center_y, bar_length, angle_rad, color, self.bar_width, 
-                    symmetric=False, inner_radius=orbit_inner
+                    symmetric=False, inner_radius=orbit_inner, 
+                    gap_size=self.gap_size, force_squares=self.force_squares
                 )
 
         # --- 5. DUAL WAVE STYLE ---
@@ -204,9 +247,11 @@ class VisualizerCanvas(QWidget):
 
                 self.current_template.draw_item(
                     painter, center_x, center_y, bar_length, angle_rad, color, self.bar_width, 
-                    symmetric=False, inner_radius=self.inner_radius
+                    symmetric=False, inner_radius=self.inner_radius, 
+                    gap_size=self.gap_size, force_squares=self.force_squares
                 )
                 self.current_template.draw_item(
                     painter, center_x, center_y, bar_length, angle_rad + math.pi, color, self.bar_width, 
-                    symmetric=False, inner_radius=self.inner_radius
+                    symmetric=False, inner_radius=self.inner_radius, 
+                    gap_size=self.gap_size, force_squares=self.force_squares
                 )

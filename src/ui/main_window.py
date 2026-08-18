@@ -20,7 +20,9 @@ from PyQt6.QtWidgets import (
     QFrame,
     QMenu,
     QStyleOptionSlider,
-    QStyle
+    QStyle,
+    QSpinBox,
+    QCheckBox
 )
 
 from .visualizer_canvas import VisualizerCanvas
@@ -60,7 +62,10 @@ class MainWindow(QMainWindow):
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(0)
 
-        # --- 1. PARAMETER PANEL (Sidebar) ---
+        self.canvas = VisualizerCanvas(root_widget)
+        self.canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+# --- 1. PARAMETER PANEL (Sidebar) ---
         self.sidebar = QFrame(root_widget)
         self.sidebar.setFixedWidth(280)
         self.sidebar.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
@@ -91,7 +96,7 @@ class MainWindow(QMainWindow):
         sidebar_layout.addLayout(form_layout)
 
         self.bars_slider = QSlider(Qt.Orientation.Horizontal)
-        self.bars_slider.setRange(16, 128)
+        self.bars_slider.setRange(16, 256)
         self.bars_slider.setValue(64)
         self.bars_slider.valueChanged.connect(self.update_bar_count)
         self.bars_label = QLabel(str(64))
@@ -162,14 +167,82 @@ class MainWindow(QMainWindow):
         form_layout.addRow("Select Device :", self.device_combo)
         self.device_combo.setVisible(True)
 
-        # --- 2. VISUALIZER CANVAS ---
-        self.canvas = VisualizerCanvas(root_widget)
-        self.canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        # Create X and Y spin boxes for the sidebar
+        self.spin_x = QSpinBox()
+        self.spin_x.setRange(-2000, 2000)
+        self.spin_x.setValue(0)
+        self.spin_x.valueChanged.connect(self.on_spinbox_position_changed)
+
+        self.spin_y = QSpinBox()
+        self.spin_y.setRange(-2000, 2000)
+        self.spin_y.setValue(0)
+        self.spin_y.valueChanged.connect(self.on_spinbox_position_changed)
+
+        spin_stylesheet = """
+            QSpinBox {
+                background-color: #2d2d2d;
+                color: white;
+                border: 1px solid #444;
+                padding-right: 4px;
+            }
+            QSpinBox::up-button, QSpinBox::down-button {
+                width: 16px;
+            }
+        """
+
+        self.spin_x.setStyleSheet(spin_stylesheet)
+        self.spin_y.setStyleSheet(spin_stylesheet)
+
+        # Bar Width & Gap Size Controls (Now safe to access self.canvas!)
+        self.spin_bar_width = QSpinBox()
+        self.spin_bar_width.setRange(1, 50)
+        self.spin_bar_width.setValue(self.canvas.bar_width)
+        self.spin_bar_width.valueChanged.connect(self.on_bar_width_changed)
+        self.spin_bar_width.setStyleSheet(spin_stylesheet)
+
+        self.spin_gap_size = QSpinBox()
+        self.spin_gap_size.setRange(0, 50)
+        self.spin_gap_size.setValue(self.canvas.gap_size)
+        self.spin_gap_size.valueChanged.connect(self.on_gap_size_changed)
+        self.spin_gap_size.setStyleSheet(spin_stylesheet)
+
+        # Pack X and Y position controls
+        pos_layout = QHBoxLayout()
+        pos_layout.addWidget(QLabel("X:"))
+        pos_layout.addWidget(self.spin_x)
+        pos_layout.addWidget(QLabel("Y:"))
+        pos_layout.addWidget(self.spin_y)
+        form_layout.addRow("Position:", pos_layout)
+
+        # Pack Bar Width & Gap Size controls into the form layout
+        form_layout.addRow("Bar Width:", self.spin_bar_width)
+        form_layout.addRow("Gap Size:", self.spin_gap_size)
 
         content_layout.addWidget(self.sidebar)
         content_layout.addWidget(self.canvas)
         root_layout.addLayout(content_layout)
 
+        self.canvas.position_changed.connect(self.update_position_spinboxes)
+
+        # --- 2. VISUALIZER CANVAS ---
+        content_layout.addWidget(self.sidebar)
+        content_layout.addWidget(self.canvas)
+        root_layout.addLayout(content_layout)
+
+        self.canvas.position_changed.connect(self.update_position_spinboxes)
+
+        self.bar_width = getattr(self, 'bar_width', 10)
+        self.gap_size = getattr(self, 'gap_size', 4)
+
+        # Force Square Blocks Checkbox
+        self.check_square_blocks = QCheckBox()
+        self.check_square_blocks.setChecked(False)
+        self.check_square_blocks.setStyleSheet("color: white;")
+        self.check_square_blocks.stateChanged.connect(self.on_force_squares_changed)
+        
+        form_layout.addRow("Force Squares:", self.check_square_blocks)
+
+        
         # --- 3. BOTTOM MEDIA CONTROL BAR ---
         self.control_bar = QFrame(root_widget)
         self.control_bar.setFixedHeight(50)
@@ -253,6 +326,13 @@ class MainWindow(QMainWindow):
         self.playback_timer.setInterval(16)
         self.playback_timer.timeout.connect(self.update_playback_progress)
         self.playback_timer.start()
+
+    def on_spinbox_position_changed(self):
+        """Sends the typed values from the sidebar to the canvas, inverting Y so positive = up."""
+        x = self.spin_x.value()
+        # Invert the Y value sent to the canvas so positive values go up
+        y = -self.spin_y.value()
+        self.canvas.set_offset(x, y)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -344,6 +424,9 @@ class MainWindow(QMainWindow):
 
     def update_bar_count(self, value):
         self.canvas.num_bars = value
+        self.canvas.current_amplitudes = np.zeros(value)
+        self.canvas.target_amplitudes = np.zeros(value)
+        self.canvas.update()
         self.bars_label.setText(str(value))
 
     def update_radius(self, value):
@@ -662,3 +745,45 @@ class MainWindow(QMainWindow):
             if has_play_btn:
                 self.play_btn.setText("▶")
             self.is_playing = True
+
+    def update_position_labels(self, x, y):
+        # Temporarily block signals so setting the value programmatically doesn't re-trigger valueChanged
+        self.spin_x.blockSignals(True)
+        self.spin_y.blockSignals(True)
+        
+        self.spin_x.setValue(x)
+        self.spin_y.setValue(y)
+        
+        self.spin_x.blockSignals(False)
+        self.spin_y.blockSignals(False)
+
+    def update_position_spinboxes(self, canvas_x, canvas_y):
+        """Updates the sidebar numbers live during a drag without triggering infinite feedback loops."""
+        target_y = -canvas_y  # Invert back so the sidebar shows positive/negative correctly
+
+        # Block signals so setting the value doesn't accidentally trigger a re-entry loop
+        self.spin_x.blockSignals(True)
+        self.spin_y.blockSignals(True)
+
+        if self.spin_x.value() != canvas_x:
+            self.spin_x.setValue(canvas_x)
+        if self.spin_y.value() != target_y:
+            self.spin_y.setValue(target_y)
+
+        self.spin_x.blockSignals(False)
+        self.spin_y.blockSignals(False)
+
+    def on_bar_width_changed(self, value):
+        """Updates the canvas bar width and repaints live."""
+        self.canvas.bar_width = value
+        self.canvas.update()
+
+    def on_gap_size_changed(self, value):
+        """Updates the canvas gap size and repaints live."""
+        self.canvas.gap_size = value
+        self.canvas.update()
+
+    def on_force_squares_changed(self, state):
+        # state is 2 for checked, 0 for unchecked in PyQt6
+        self.canvas.force_squares = (state == Qt.CheckState.Checked.value or state == 2)
+        self.canvas.update()

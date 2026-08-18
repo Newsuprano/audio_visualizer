@@ -4,7 +4,7 @@ from PyQt6.QtGui import QPen
 from .base_template import BaseTemplate
 
 class LineTemplate(BaseTemplate):
-    def draw_item(self, painter, x, y, length, angle, color, width, symmetric=False, inner_radius=120):
+    def draw_item(self, painter, x, y, length, angle, color, width, symmetric=False, inner_radius=120, **kwargs):
         pen = QPen(color, width)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         painter.setPen(pen)
