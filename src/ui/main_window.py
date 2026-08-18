@@ -26,10 +26,10 @@ from PyQt6.QtWidgets import (
 )
 
 from .visualizer_canvas import VisualizerCanvas
-from audio import open_audio_stream, process_live_chunk
-from ui.template_dialog import TemplateDialog
-from ui.popups import VolumePopup
-from audio_player import AudioPlayer
+from src.audio import open_audio_stream, process_live_chunk
+from src.ui.template_dialog import TemplateDialog
+from src.ui.popups import VolumePopup
+from src.audio_player import AudioPlayer
 import time
 
 import pyaudiowpatch as pyaudio
@@ -65,7 +65,7 @@ class MainWindow(QMainWindow):
         self.canvas = VisualizerCanvas(root_widget)
         self.canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-# --- 1. PARAMETER PANEL (Sidebar) ---
+        # --- 1. PARAMETER PANEL (Sidebar) ---
         self.sidebar = QFrame(root_widget)
         self.sidebar.setFixedWidth(280)
         self.sidebar.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
@@ -193,7 +193,7 @@ class MainWindow(QMainWindow):
         self.spin_x.setStyleSheet(spin_stylesheet)
         self.spin_y.setStyleSheet(spin_stylesheet)
 
-        # Bar Width & Gap Size Controls (Now safe to access self.canvas!)
+        # Bar Width & Gap Size Controls
         self.spin_bar_width = QSpinBox()
         self.spin_bar_width.setRange(1, 50)
         self.spin_bar_width.setValue(self.canvas.bar_width)
@@ -214,17 +214,17 @@ class MainWindow(QMainWindow):
         pos_layout.addWidget(self.spin_y)
         form_layout.addRow("Position:", pos_layout)
 
-        # Pack Bar Width & Gap Size controls into the form layout
         form_layout.addRow("Bar Width:", self.spin_bar_width)
         form_layout.addRow("Gap Size:", self.spin_gap_size)
 
-        content_layout.addWidget(self.sidebar)
-        content_layout.addWidget(self.canvas)
-        root_layout.addLayout(content_layout)
+        # Force Square Blocks Checkbox
+        self.check_square_blocks = QCheckBox()
+        self.check_square_blocks.setChecked(False)
+        self.check_square_blocks.setStyleSheet("color: white;")
+        self.check_square_blocks.stateChanged.connect(self.on_force_squares_changed)
+        form_layout.addRow("Force Squares:", self.check_square_blocks)
 
-        self.canvas.position_changed.connect(self.update_position_spinboxes)
-
-        # --- 2. VISUALIZER CANVAS ---
+        # Add sidebar and canvas to content layout once
         content_layout.addWidget(self.sidebar)
         content_layout.addWidget(self.canvas)
         root_layout.addLayout(content_layout)
@@ -234,15 +234,6 @@ class MainWindow(QMainWindow):
         self.bar_width = getattr(self, 'bar_width', 10)
         self.gap_size = getattr(self, 'gap_size', 4)
 
-        # Force Square Blocks Checkbox
-        self.check_square_blocks = QCheckBox()
-        self.check_square_blocks.setChecked(False)
-        self.check_square_blocks.setStyleSheet("color: white;")
-        self.check_square_blocks.stateChanged.connect(self.on_force_squares_changed)
-        
-        form_layout.addRow("Force Squares:", self.check_square_blocks)
-
-        
         # --- 3. BOTTOM MEDIA CONTROL BAR ---
         self.control_bar = QFrame(root_widget)
         self.control_bar.setFixedHeight(50)

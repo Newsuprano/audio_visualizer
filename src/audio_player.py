@@ -1,6 +1,7 @@
 import pygame
 from mutagen import File
 import numpy as np
+from src.audio import read_chunk_at_position
 
 
 class AudioPlayer:
@@ -116,7 +117,6 @@ class AudioPlayer:
         current_frame = int(time_sec * sampling_rate)
         
         if self._cached_amplitudes is None or abs(current_frame - self._cached_frame) >= (chunk_size // 2):
-            from audio import read_chunk_at_position
             _, amplitudes = read_chunk_at_position(
                 audio_stream,
                 current_frame,

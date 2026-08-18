@@ -5,9 +5,9 @@ from PyQt6.QtGui import QColor, QPainter
 from PyQt6.QtWidgets import QWidget, QSizePolicy
 
 # Import modular templates
-from templates.line_template import LineTemplate
-from templates.block_template import BlockTemplate
-from audio import read_chunk_at_position
+from src.templates.line_template import LineTemplate
+from src.templates.block_template import BlockTemplate
+from src.audio import read_chunk_at_position
 
 
 class VisualizerCanvas(QWidget):
