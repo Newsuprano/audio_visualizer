@@ -39,3 +39,10 @@ class Icons:
     DESKTOP_AUDIO_24F = (FILL_DIR_24 / "computer_sound_24F.svg")
 
     # ====================
+
+    ## Timeline
+    PLAY_BTN_24 = (FILL_DIR_24 / "play_arrow_24F.svg")
+    PAUSE_BTN_24 = (FILL_DIR_24 / "pause_24F.svg")
+    VOLUME_OFF_24 = (CLEAR_DIR_24 / "volume_off_24.svg")
+    VOLUME_DOWN_24 = (CLEAR_DIR_24 / "volume_down_24.svg")
+    VOLUME_UP_24 = (CLEAR_DIR_24 / "volume_up_24.svg")

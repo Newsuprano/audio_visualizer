@@ -2,7 +2,7 @@ from pathlib import Path
 import math
 import numpy as np
 from PyQt6.QtCore import QTimer, Qt, QPoint
-from PyQt6.QtGui import QColor, QPainter, QPen, QMouseEvent
+from PyQt6.QtGui import QColor, QPainter, QPen, QMouseEvent, QIcon
 from PyQt6.QtWidgets import (
     QWidget,
     QPushButton,
@@ -23,9 +23,10 @@ from src.ui.popups import VolumePopup
 from src.ui.sidebar import SidebarPanel
 from src.audio.audio_player import AudioPlayer
 from src.audio.audio_manager import AudioManager
-import time
+from src.ui.timeline_control import TimelineControl
+from assets import Icons
 
-#audio_file_path = "assets/audio/symphony.mp3"
+import time
 
 
 class MainWindow(QMainWindow):
@@ -39,6 +40,8 @@ class MainWindow(QMainWindow):
 
         self.is_playing = False
         self.current_mode = "file"
+        self.sidebar_visible = True
+        self.track_duration = 0.0
         
         # Instantiate dedicated Audio Manager
         self.audio_manager = AudioManager()
@@ -77,7 +80,6 @@ class MainWindow(QMainWindow):
         self.sidebar.style_changed.connect(lambda text: self.canvas.set_style({"Circular": "circular", "Linear": "linear", "Symmetric Waveform": "symmetric", "Equalizer Orbit": "orbit", "Dual Wave": "dual_wave"}.get(text, "circular")))
         self.sidebar.template_selected.connect(self.canvas.set_template)
         
-        # Audio source and device selection routing
         self.sidebar.audio_file_selected.connect(self.update_audio_path)
         self.sidebar.audio_source_changed.connect(self.on_audio_source_changed)
         self.sidebar.device_selected.connect(self.on_device_selected)
@@ -86,73 +88,26 @@ class MainWindow(QMainWindow):
         content_layout.addWidget(self.canvas)
         root_layout.addLayout(content_layout)
 
-        # --- 3. BOTTOM MEDIA CONTROL BAR ---
-        self.control_bar = QFrame(root_widget)
-        self.control_bar.setFixedHeight(50)
-        self.control_bar.setStyleSheet("background-color: #181818; border-top: 1px solid #282828;")
-        bar_layout = QHBoxLayout(self.control_bar)
-        bar_layout.setContentsMargins(15, 0, 15, 0)
-        bar_layout.setSpacing(15)
+        # --- 3. BOTTOM MEDIA CONTROL BAR (Initialize FIRST so attributes exist) ---
+        self.timeline_control = TimelineControl(root_widget)
+        self.timeline_control.play_clicked.connect(self.toggle_play_pause)
+        self.timeline_control.seek_moved.connect(self.seek_timeline)
+        self.timeline_control.volume_changed.connect(self.update_volume)
+        self.timeline_control.setVisible(False)
 
-        self.play_btn = QPushButton("⏸")
-        self.play_btn.setFixedSize(32, 32)
-        self.play_btn.setStyleSheet("""
-            QPushButton { background-color: #cc0000; color: white; border-radius: 16px; font-weight: bold; border: none; }
-            QPushButton:hover { background-color: #e60000; }
-        """)
-        self.play_btn.clicked.connect(self.toggle_play_pause)
-        bar_layout.addWidget(self.play_btn)
+        # Expose references safely after TimelineControl is created
+        self.play_btn = self.timeline_control.play_btn
+        self.vol_btn = self.timeline_control.vol_btn
+        self.vol_popup = self.timeline_control.vol_popup
+        self.time_label = self.timeline_control.time_label
+        self.timeline_slider = self.timeline_control.timeline_slider
+        self.control_bar = self.timeline_control
 
-        self.vol_btn = QPushButton("🔊")
-        self.vol_btn.setFixedSize(30, 30)
-        self.vol_btn.setStyleSheet("""
-            QPushButton { background-color: transparent; color: #cccccc; font-size: 16px; border: none; }
-            QPushButton:hover { color: white; }
-        """)
-        
-        self.vol_popup = VolumePopup(self)
-        self.vol_popup.hide()
-        self.vol_popup.slider.setValue(50)
-        self.vol_popup.slider.valueChanged.connect(self.update_volume)
-        
-        self.vol_btn.enterEvent = self.show_volume_popup
-        self.vol_btn.leaveEvent = self.check_hide_volume_popup
-        bar_layout.addWidget(self.vol_btn)
-
-        self.track_duration = 0.0
-        self.time_label = QLabel("0:00 / 0:00")
-        self.time_label.setStyleSheet("color: #cccccc; font-size: 12px;")
-        bar_layout.addWidget(self.time_label)
-
-        self.timeline_slider = QSlider(Qt.Orientation.Horizontal)
-        self.timeline_slider.setRange(0, 1000)
-        self.timeline_slider.setValue(0)
-        self.timeline_slider.setStyleSheet("""
-            QSlider::groove:horizontal { background: #444; height: 4px; border-radius: 2px; }
-            QSlider::sub-page:horizontal { background: #cc0000; height: 4px; border-radius: 2px; }
-            QSlider::handle:horizontal { background: #ff0000; width: 12px; height: 12px; margin: -4px 0; border-radius: 6px; }
-        """)
-        
-        self.timeline_slider.sliderMoved.connect(self.seek_timeline)
-        self.timeline_slider.installEventFilter(self)
-        bar_layout.addWidget(self.timeline_slider, stretch=1)
-
-        self.settings_btn = QPushButton("⚙")
-        self.settings_btn.setFixedSize(30, 30)
-        self.settings_btn.setStyleSheet("""
-            QPushButton { background-color: transparent; color: #cccccc; font-size: 16px; border: none; }
-            QPushButton:hover { color: white; }
-        """)
-        bar_layout.addWidget(self.settings_btn)
-
-        #self.init_audio(self.audio_file_path)
-
-        root_layout.addWidget(self.control_bar)
+        root_layout.addWidget(self.timeline_control)
         self.setCentralWidget(root_widget)
 
-        self.sidebar_visible = True
-
-        self.trigger_btn = QPushButton("▶", self)
+        # --- TRIGGER BUTTON (Attached to root_widget and raised on top) ---
+        self.trigger_btn = QPushButton("▶", root_widget)
         self.trigger_btn.setFixedWidth(24)
         self.trigger_btn.setFixedHeight(80)
         self.trigger_btn.setStyleSheet("""
@@ -160,6 +115,7 @@ class MainWindow(QMainWindow):
             QPushButton:hover { background-color: #353535; border-color: #00ff96; }
         """)
         self.trigger_btn.hide()
+        self.trigger_btn.raise_()
         self.trigger_btn.clicked.connect(self.show_sidebar)
 
         # --- 4. PLAYBACK SYNC TIMER ---
@@ -186,26 +142,9 @@ class MainWindow(QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        if hasattr(self, 'trigger_btn'):
+        if hasattr(self, 'trigger_btn') and hasattr(self, 'control_bar'):
             y_pos = (self.height() - self.trigger_btn.height() - self.control_bar.height()) // 2
             self.trigger_btn.move(0, y_pos)
-
-    def show_volume_popup(self, event):
-        global_pos = self.vol_btn.mapToGlobal(QPoint(0, 0))
-        x = global_pos.x() + (self.vol_btn.width() - self.vol_popup.width()) // 2
-        y = global_pos.y() - self.vol_popup.height() - 5
-        self.vol_popup.move(x, y)
-        self.vol_popup.show()
-
-    def check_hide_volume_popup(self, event):
-        QTimer.singleShot(150, self._delayed_hide_check)
-
-    def _delayed_hide_check(self):
-        if hasattr(self, "vol_popup") and hasattr(self, "vol_btn"):
-            is_over_popup = self.vol_popup.underMouse() or self.vol_popup.rect().contains(self.vol_popup.mapFromGlobal(self.cursor().pos()))
-            is_over_btn = self.vol_btn.underMouse()
-            if not is_over_popup and not is_over_btn:
-                self.vol_popup.hide()
 
     def mouseMoveEvent(self, event: QMouseEvent):
         if not self.sidebar_visible and event.pos().x() <= 25:
@@ -218,7 +157,7 @@ class MainWindow(QMainWindow):
 
         if self.is_playing:
             self.audio_player.pause()
-            self.play_btn.setText("▶")
+            self.play_btn.setIcon(QIcon(str(Icons.PLAY_BTN_24)))
             self.is_playing = False
         else:
             if self.current_time_sec >= self.track_duration:
@@ -230,7 +169,7 @@ class MainWindow(QMainWindow):
             self.playback_start_wall_time = time.perf_counter()
             self.playback_start_audio_sec = self.current_time_sec
 
-            self.play_btn.setText("⏸")
+            self.play_btn.setIcon(QIcon(str(Icons.PAUSE_BTN_24)))
             self.is_playing = True
 
     def seek_timeline(self, position):
@@ -285,10 +224,10 @@ class MainWindow(QMainWindow):
             self.canvas.set_audio_source(self.audio_stream)
             
             self.is_playing = False
-            self.play_btn.setText("▶")
 
             total_str = self.format_time(self.track_duration)
             self.time_label.setText(f"0:00 / {total_str}")
+            self.timeline_control.setVisible(True)
 
     def update_playback_progress(self):
         if not self.is_playing:
@@ -354,13 +293,6 @@ class MainWindow(QMainWindow):
     def update_volume(self, value):
         if hasattr(self, "audio_player"):
             self.audio_player.set_volume(value)
-            
-        if value == 0:
-            self.vol_btn.setText("🔇")
-        elif value < 50:
-            self.vol_btn.setText("🔉")
-        else:
-            self.vol_btn.setText("🔊")
 
     def eventFilter(self, obj, event):
         if obj == self.timeline_slider and event.type() == event.Type.MouseButtonPress:
@@ -401,23 +333,50 @@ class MainWindow(QMainWindow):
         is_desktop = "Desktop" in text
         is_mic = "Microphone" in text
 
-        self.sidebar.device_combo.blockSignals(True)
-        self.sidebar.device_combo.clear()
+        # Safely check and handle sidebar device combo if it exists
+        if hasattr(self.sidebar, "device_combo") and self.sidebar.device_combo is not None:
+            self.sidebar.device_combo.blockSignals(True)
+            self.sidebar.device_combo.clear()
+
+        if is_desktop or is_mic:
+            if hasattr(self, "audio_player") and self.audio_player.is_loaded:
+                self.audio_player.pause()
+            self.is_playing = False
+            self.timeline_control.setVisible(False)
+            self.play_btn.setIcon(QIcon(str(Icons.PLAY_BTN_24)))
+            
+            # Clear out the visualizer bars so they flatline immediately
+            if hasattr(self, "canvas") and hasattr(self.canvas, "num_bars"):
+                self.canvas.push_amplitudes(np.zeros(self.canvas.num_bars))
+                self.canvas.update()
 
         if not is_desktop and not is_mic:
             self.current_mode = "file"
+            self.is_playing = False
+            
+            # Clear out the audio stream and flatline the visualizer canvas
+            if hasattr(self, "audio_stream") and self.audio_stream is not None:
+                self.audio_stream = None
+            if hasattr(self, "canvas") and hasattr(self.canvas, "num_bars"):
+                self.canvas.push_amplitudes(np.zeros(self.canvas.num_bars))
+                self.canvas.update()
+                
+            # Hide the timeline until a new track is explicitly loaded
+            if hasattr(self, "timeline_control"):
+                self.timeline_control.setVisible(False)
+                
             self.setup_file_mode_ui(enabled=True)
-            self.sidebar.device_combo.setVisible(False)
-            self.sidebar.device_combo.blockSignals(False)
-            if hasattr(self, "audio_player") and self.audio_player.is_loaded:
-                self.audio_player.unpause()
+            if hasattr(self, "sidebar") and hasattr(self.sidebar, "device_combo") and self.sidebar.device_combo is not None:
+                self.sidebar.device_combo.setVisible(False)
+                self.sidebar.device_combo.blockSignals(False)
             return
 
         if is_desktop:
             self.current_mode = "desktop"
             self.setup_file_mode_ui(enabled=False)
-            self.sidebar.device_combo.setVisible(False)
-            self.sidebar.device_combo.blockSignals(False)
+            if hasattr(self.sidebar, "device_combo") and self.sidebar.device_combo is not None:
+                self.sidebar.device_combo.setVisible(False)
+                self.sidebar.device_combo.blockSignals(False)
 
             info = self.audio_manager.get_default_desktop_loopback()
             if info:
@@ -426,25 +385,26 @@ class MainWindow(QMainWindow):
         elif is_mic:
             self.current_mode = "mic"
             self.setup_file_mode_ui(enabled=False)
-            self.sidebar.device_combo.setVisible(True)
+            if hasattr(self.sidebar, "device_combo") and self.sidebar.device_combo is not None:
+                self.sidebar.device_combo.setVisible(True)
 
-            devices = self.audio_manager.get_devices()
-            target_index = None
-            for idx, name in devices:
-                self.sidebar.device_combo.addItem(f"[{idx}] {name}", userData=idx)
-                if target_index is None:
-                    target_index = idx
+                devices = self.audio_manager.get_devices()
+                target_index = None
+                for idx, name in devices:
+                    self.sidebar.device_combo.addItem(f"[{idx}] {name}", userData=idx)
+                    if target_index is None:
+                        target_index = idx
 
-            self.sidebar.device_combo.blockSignals(False)
-            if self.sidebar.device_combo.count() > 0:
-                self.on_device_selected(self.sidebar.device_combo.currentIndex())
+                self.sidebar.device_combo.blockSignals(False)
+                if self.sidebar.device_combo.count() > 0:
+                    self.on_device_selected(self.sidebar.device_combo.currentIndex())
 
     def on_device_selected(self, index):
         if index < 0:
             return
 
-        current_mode_text = self.sidebar.source_combo.currentText() if hasattr(self, 'source_combo') else ""
-        if "Microphone" not in current_mode_text:
+        # Ensure we are currently in microphone mode
+        if self.current_mode != "mic":
             return
 
         device_idx = self.sidebar.device_combo.itemData(index)
@@ -471,13 +431,13 @@ class MainWindow(QMainWindow):
 
         if enabled:
             if has_play_btn:
-                self.play_btn.setText("⏸")
+                self.play_btn.setIcon(QIcon(str(Icons.PAUSE_BTN_24)))
             self.is_playing = True
         else:
             if hasattr(self, "audio_player") and self.audio_player.is_loaded:
                 self.audio_player.pause()
             if has_play_btn:
-                self.play_btn.setText("▶")
+                self.play_btn.setIcon(QIcon(str(Icons.PLAY_BTN_24)))
             self.is_playing = True
 
     def update_audio_path(self, path_str):
@@ -494,5 +454,5 @@ class MainWindow(QMainWindow):
             self.playback_start_audio_sec = 0.0
             
             self.is_playing = True
-            self.play_btn.setText("⏸")
+            self.play_btn.setIcon(QIcon(str(Icons.PAUSE_BTN_24)))
             print(f"Loaded and started dynamic audio path: {self.audio}")
