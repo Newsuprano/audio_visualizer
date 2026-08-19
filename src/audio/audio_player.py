@@ -1,7 +1,7 @@
 import pygame
 from mutagen import File
 import numpy as np
-from src.audio import read_chunk_at_position
+from src.audio.audio import read_chunk_at_position
 
 
 class AudioPlayer:

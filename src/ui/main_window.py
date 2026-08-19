@@ -1,40 +1,31 @@
 from pathlib import Path
-import queue
 import math
 import numpy as np
-from sounddevice import WasapiSettings
-import sounddevice as sd
 from PyQt6.QtCore import QTimer, Qt, QPoint
 from PyQt6.QtGui import QColor, QPainter, QPen, QMouseEvent
 from PyQt6.QtWidgets import (
     QWidget,
-    QComboBox,
     QPushButton,
     QLabel,
     QSlider,
     QMainWindow,
     QVBoxLayout,
     QHBoxLayout,
-    QFormLayout,
     QSizePolicy,
     QFrame,
-    QMenu,
     QStyleOptionSlider,
     QStyle,
-    QSpinBox,
-    QCheckBox
 )
 
 from .visualizer_canvas import VisualizerCanvas
-from src.audio import open_audio_stream, process_live_chunk
-from src.ui.template_dialog import TemplateDialog
+from src.audio.audio import open_audio_stream, process_live_chunk
 from src.ui.popups import VolumePopup
-from src.audio_player import AudioPlayer
+from src.ui.sidebar import SidebarPanel
+from src.audio.audio_player import AudioPlayer
+from src.audio.audio_manager import AudioManager
 import time
 
-import pyaudiowpatch as pyaudio
-
-audio_file_path = "src/audio/symphony.mp3"
+audio_file_path = "assets/audio/symphony.mp3"
 
 
 class MainWindow(QMainWindow):
@@ -48,9 +39,9 @@ class MainWindow(QMainWindow):
 
         self.is_playing = True
         self.current_mode = "file"
-        self.live_stream = None
-        self.live_buffer = None
-        self.audio_queue = queue.Queue()
+        
+        # Instantiate dedicated Audio Manager
+        self.audio_manager = AudioManager()
 
         # --- ROOT CONTAINER & LAYOUT ---
         root_widget = QWidget(self)
@@ -66,173 +57,33 @@ class MainWindow(QMainWindow):
         self.canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         # --- 1. PARAMETER PANEL (Sidebar) ---
-        self.sidebar = QFrame(root_widget)
-        self.sidebar.setFixedWidth(280)
-        self.sidebar.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
-        self.sidebar.setStyleSheet("background-color: #1e1e1e; color: white;")
+        self.sidebar = SidebarPanel(
+            root_widget, 
+            initial_bar_width=self.canvas.bar_width, 
+            initial_gap_size=self.canvas.gap_size
+        )
+
+        # Connect sidebar signals cleanly
+        self.sidebar.hide_requested.connect(self.hide_sidebar)
+        self.sidebar.bar_width_changed.connect(lambda v: setattr(self.canvas, 'bar_width', v) or self.canvas.update())
+        self.sidebar.gap_size_changed.connect(lambda v: setattr(self.canvas, 'gap_size', v) or self.canvas.update())
+        self.sidebar.force_squares_changed.connect(lambda s: setattr(self.canvas, 'force_squares', (s == 2)) or self.canvas.update())
+        self.sidebar.position_changed.connect(lambda x, y: self.canvas.set_offset(x, -y))
+        self.canvas.position_changed.connect(self.sidebar.update_position_spinboxes)
         
-        sidebar_layout = QVBoxLayout(self.sidebar)
+        self.sidebar.bar_count_changed.connect(lambda v: setattr(self.canvas, 'num_bars', v) or setattr(self.canvas, 'current_amplitudes', np.zeros(v)) or setattr(self.canvas, 'target_amplitudes', np.zeros(v)) or self.canvas.update())
+        self.sidebar.radius_changed.connect(lambda v: setattr(self.canvas, 'inner_radius', v))
+        self.sidebar.max_length_changed.connect(lambda v: setattr(self.canvas, 'max_bar_length', v))
+        self.sidebar.style_changed.connect(lambda text: self.canvas.set_style({"Circular": "circular", "Linear": "linear", "Symmetric Waveform": "symmetric", "Equalizer Orbit": "orbit", "Dual Wave": "dual_wave"}.get(text, "circular")))
+        self.sidebar.template_selected.connect(self.canvas.set_template)
         
-        header_layout = QHBoxLayout()
-        title_label = QLabel("<b>Parameters</b>")
-        title_label.setStyleSheet("font-size: 14px; color: #00ff96;")
-        
-        self.hide_btn = QPushButton("◀ Hide")
-        self.hide_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #333; color: white; border: none; 
-                padding: 4px 8px; border-radius: 3px;
-            }
-            QPushButton:hover { background-color: #444; }
-        """)
-        self.hide_btn.clicked.connect(self.hide_sidebar)
-        
-        header_layout.addWidget(title_label)
-        header_layout.addStretch()
-        header_layout.addWidget(self.hide_btn)
-        sidebar_layout.addLayout(header_layout)
+        # Audio source and device selection routing
+        self.sidebar.audio_source_changed.connect(self.on_audio_source_changed)
+        self.sidebar.device_selected.connect(self.on_device_selected)
 
-        form_layout = QFormLayout()
-        sidebar_layout.addLayout(form_layout)
-
-        self.bars_slider = QSlider(Qt.Orientation.Horizontal)
-        self.bars_slider.setRange(16, 256)
-        self.bars_slider.setValue(64)
-        self.bars_slider.valueChanged.connect(self.update_bar_count)
-        self.bars_label = QLabel(str(64))
-        form_layout.addRow("Bar Count:", self.bars_slider)
-        form_layout.addRow("", self.bars_label)
-
-        self.radius_slider = QSlider(Qt.Orientation.Horizontal)
-        self.radius_slider.setRange(50, 300)
-        self.radius_slider.setValue(120)
-        self.radius_slider.valueChanged.connect(self.update_radius)
-        self.radius_label = QLabel(str(120))
-        form_layout.addRow("Inner Radius:", self.radius_slider)
-        form_layout.addRow("", self.radius_label)
-
-        self.length_slider = QSlider(Qt.Orientation.Horizontal)
-        self.length_slider.setRange(50, 400)
-        self.length_slider.setValue(180)
-        self.length_slider.valueChanged.connect(self.update_max_length)
-        self.length_label = QLabel(str(180))
-        form_layout.addRow("Max Bar Height:", self.length_slider)
-        form_layout.addRow("", self.length_label)
-
-        self.style_combo = QComboBox()
-        self.style_combo.addItems([
-            "Circular", "Linear", 
-            "Symmetric Waveform", 
-            "Equalizer Orbit", 
-            "Dual Wave",
-        ])
-        self.style_combo.currentTextChanged.connect(self.on_style_changed)
-        form_layout.addRow("Style:", self.style_combo)
-
-        self.template_dialog = TemplateDialog(self)
-        self.template_dialog.template_selected.connect(self.apply_template_selection)
-
-        self.open_templates_btn = QPushButton("Templates Menu")
-        self.open_templates_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #2d2d2d; color: white; border: 1px solid #444; padding: 8px; border-radius: 4px;
-            }
-            QPushButton:hover { background-color: #353535; border: 1px solid #00ff96; }
-        """)
-        self.open_templates_btn.clicked.connect(self.show_template_dialog)
-        form_layout.addRow("Templates:", self.open_templates_btn)
-
-        self.source_combo = QComboBox()
-        self.source_combo.addItems(["📁 Audio File", "🎙️ Microphone", "🖥️ Desktop Audio"])
-        self.source_combo.setStyleSheet("""
-            QComboBox {
-                background-color: #2d2d2d; color: #00ff96; border: 1px solid #444; 
-                padding: 4px 8px; border-radius: 4px; font-weight: bold;
-            }
-            QComboBox:hover { background-color: #353535; border-color: #00ff96; }
-            QComboBox::drop-down { border: 0px; }
-        """)
-        self.source_combo.currentTextChanged.connect(self.on_audio_source_changed)
-        form_layout.addRow("Change mode :", self.source_combo)
-
-        self.device_combo = QComboBox()
-        self.device_combo.setStyleSheet(self.source_combo.styleSheet())
-        
-        devices = sd.query_devices()
-        for i, dev in enumerate(devices):
-            if dev['max_input_channels'] > 0 or dev['max_output_channels'] > 0:
-                self.device_combo.addItem(f"[{i}] {dev['name']}", userData=i)
-                
-        self.device_combo.currentIndexChanged.connect(self.on_device_selected)
-        form_layout.addRow("Select Device :", self.device_combo)
-        self.device_combo.setVisible(True)
-
-        # Create X and Y spin boxes for the sidebar
-        self.spin_x = QSpinBox()
-        self.spin_x.setRange(-2000, 2000)
-        self.spin_x.setValue(0)
-        self.spin_x.valueChanged.connect(self.on_spinbox_position_changed)
-
-        self.spin_y = QSpinBox()
-        self.spin_y.setRange(-2000, 2000)
-        self.spin_y.setValue(0)
-        self.spin_y.valueChanged.connect(self.on_spinbox_position_changed)
-
-        spin_stylesheet = """
-            QSpinBox {
-                background-color: #2d2d2d;
-                color: white;
-                border: 1px solid #444;
-                padding-right: 4px;
-            }
-            QSpinBox::up-button, QSpinBox::down-button {
-                width: 16px;
-            }
-        """
-
-        self.spin_x.setStyleSheet(spin_stylesheet)
-        self.spin_y.setStyleSheet(spin_stylesheet)
-
-        # Bar Width & Gap Size Controls
-        self.spin_bar_width = QSpinBox()
-        self.spin_bar_width.setRange(1, 50)
-        self.spin_bar_width.setValue(self.canvas.bar_width)
-        self.spin_bar_width.valueChanged.connect(self.on_bar_width_changed)
-        self.spin_bar_width.setStyleSheet(spin_stylesheet)
-
-        self.spin_gap_size = QSpinBox()
-        self.spin_gap_size.setRange(0, 50)
-        self.spin_gap_size.setValue(self.canvas.gap_size)
-        self.spin_gap_size.valueChanged.connect(self.on_gap_size_changed)
-        self.spin_gap_size.setStyleSheet(spin_stylesheet)
-
-        # Pack X and Y position controls
-        pos_layout = QHBoxLayout()
-        pos_layout.addWidget(QLabel("X:"))
-        pos_layout.addWidget(self.spin_x)
-        pos_layout.addWidget(QLabel("Y:"))
-        pos_layout.addWidget(self.spin_y)
-        form_layout.addRow("Position:", pos_layout)
-
-        form_layout.addRow("Bar Width:", self.spin_bar_width)
-        form_layout.addRow("Gap Size:", self.spin_gap_size)
-
-        # Force Square Blocks Checkbox
-        self.check_square_blocks = QCheckBox()
-        self.check_square_blocks.setChecked(False)
-        self.check_square_blocks.setStyleSheet("color: white;")
-        self.check_square_blocks.stateChanged.connect(self.on_force_squares_changed)
-        form_layout.addRow("Force Squares:", self.check_square_blocks)
-
-        # Add sidebar and canvas to content layout once
         content_layout.addWidget(self.sidebar)
         content_layout.addWidget(self.canvas)
         root_layout.addLayout(content_layout)
-
-        self.canvas.position_changed.connect(self.update_position_spinboxes)
-
-        self.bar_width = getattr(self, 'bar_width', 10)
-        self.gap_size = getattr(self, 'gap_size', 4)
 
         # --- 3. BOTTOM MEDIA CONTROL BAR ---
         self.control_bar = QFrame(root_widget)
@@ -245,9 +96,7 @@ class MainWindow(QMainWindow):
         self.play_btn = QPushButton("⏸")
         self.play_btn.setFixedSize(32, 32)
         self.play_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #cc0000; color: white; border-radius: 16px; font-weight: bold; border: none;
-            }
+            QPushButton { background-color: #cc0000; color: white; border-radius: 16px; font-weight: bold; border: none; }
             QPushButton:hover { background-color: #e60000; }
         """)
         self.play_btn.clicked.connect(self.toggle_play_pause)
@@ -318,12 +167,21 @@ class MainWindow(QMainWindow):
         self.playback_timer.timeout.connect(self.update_playback_progress)
         self.playback_timer.start()
 
-    def on_spinbox_position_changed(self):
-        """Sends the typed values from the sidebar to the canvas, inverting Y so positive = up."""
-        x = self.spin_x.value()
-        # Invert the Y value sent to the canvas so positive values go up
-        y = -self.spin_y.value()
-        self.canvas.set_offset(x, y)
+    def hide_sidebar(self):
+        self.sidebar.setVisible(False)
+        self.sidebar_visible = False
+        if hasattr(self, 'trigger_btn'):
+            self.trigger_btn.show()
+        self.canvas.updateGeometry()
+        self.canvas.update()
+
+    def show_sidebar(self):
+        if hasattr(self, 'trigger_btn'):
+            self.trigger_btn.hide()
+        self.sidebar.setVisible(True)
+        self.sidebar_visible = True
+        self.canvas.updateGeometry()
+        self.canvas.update()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -347,20 +205,6 @@ class MainWindow(QMainWindow):
             is_over_btn = self.vol_btn.underMouse()
             if not is_over_popup and not is_over_btn:
                 self.vol_popup.hide()
-
-    def hide_sidebar(self):
-        self.sidebar.setVisible(False)
-        self.sidebar_visible = False
-        self.trigger_btn.show()
-        self.canvas.updateGeometry()
-        self.canvas.update()
-
-    def show_sidebar(self):
-        self.trigger_btn.hide()
-        self.sidebar.setVisible(True)
-        self.sidebar_visible = True
-        self.canvas.updateGeometry()
-        self.canvas.update()
 
     def mouseMoveEvent(self, event: QMouseEvent):
         if not self.sidebar_visible and event.pos().x() <= 25:
@@ -413,40 +257,6 @@ class MainWindow(QMainWindow):
                 )
                 self.canvas.push_amplitudes(amplitudes)
 
-    def update_bar_count(self, value):
-        self.canvas.num_bars = value
-        self.canvas.current_amplitudes = np.zeros(value)
-        self.canvas.target_amplitudes = np.zeros(value)
-        self.canvas.update()
-        self.bars_label.setText(str(value))
-
-    def update_radius(self, value):
-        self.canvas.inner_radius = value
-        self.radius_label.setText(str(value))
-
-    def update_max_length(self, value):
-        self.canvas.max_bar_length = value
-        self.length_label.setText(str(value))
-
-    def on_style_changed(self, text):
-        style_map = {
-            "Circular": "circular", 
-            "Linear": "linear", 
-            "Symmetric Waveform": "symmetric",
-            "Equalizer Orbit": "orbit", 
-            "Dual Wave": "dual_wave",
-        }
-        style_key = style_map.get(text, "circular")
-        self.canvas.set_style(style_key)
-        self.template_dialog.set_shape(style_key)
-
-    def show_template_dialog(self):
-        self.template_dialog.set_shape(self.canvas.visualizer_style)
-        self.template_dialog.exec()
-
-    def apply_template_selection(self, template_key):
-        self.canvas.set_template(template_key)
-
     def format_time(self, seconds):
         if math.isnan(seconds) or seconds < 0:
             return "0:00"
@@ -479,11 +289,11 @@ class MainWindow(QMainWindow):
             return
 
         if self.current_mode in ["mic", "desktop"]:
-            if hasattr(self, "audio_queue") and self.audio_queue is not None:
+            if hasattr(self.audio_manager, "audio_queue") and self.audio_manager.audio_queue is not None:
                 try:
                     latest_chunk = None
-                    while not self.audio_queue.empty():
-                        latest_chunk = self.audio_queue.get_nowait()
+                    while not self.audio_manager.audio_queue.empty():
+                        latest_chunk = self.audio_manager.audio_queue.get_nowait()
 
                     if latest_chunk is not None and len(latest_chunk) > 0:
                         _, binned = process_live_chunk(
@@ -579,35 +389,20 @@ class MainWindow(QMainWindow):
                 
         return super().eventFilter(obj, event)
 
-    def stop_live_stream(self):
-        if hasattr(self, 'live_stream') and self.live_stream is not None:
-            try:
-                self.live_stream.stop_stream()
-                self.live_stream.close()
-            except Exception:
-                pass
-            self.live_stream = None
-
-    def toggle_audio_source_mode(self):
-        pass
-
     def on_audio_source_changed(self, text):
-        self.stop_live_stream()
-        
-        if not hasattr(self, 'pyaudio_instance') or self.pyaudio_instance is None:
-            self.pyaudio_instance = pyaudio.PyAudio()
+        self.audio_manager.stop_stream()
 
         is_desktop = "Desktop" in text
         is_mic = "Microphone" in text
 
-        self.device_combo.blockSignals(True)
-        self.device_combo.clear()
+        self.sidebar.device_combo.blockSignals(True)
+        self.sidebar.device_combo.clear()
 
         if not is_desktop and not is_mic:
             self.current_mode = "file"
             self.setup_file_mode_ui(enabled=True)
-            self.device_combo.setVisible(False)
-            self.device_combo.blockSignals(False)
+            self.sidebar.device_combo.setVisible(False)
+            self.sidebar.device_combo.blockSignals(False)
             if hasattr(self, "audio_player") and self.audio_player.is_loaded:
                 self.audio_player.unpause()
             return
@@ -615,107 +410,49 @@ class MainWindow(QMainWindow):
         if is_desktop:
             self.current_mode = "desktop"
             self.setup_file_mode_ui(enabled=False)
-            self.device_combo.setVisible(False)
-            self.device_combo.blockSignals(False)
+            self.sidebar.device_combo.setVisible(False)
+            self.sidebar.device_combo.blockSignals(False)
 
-            try:
-                wasapi_info = self.pyaudio_instance.get_host_api_info_by_type(pyaudio.paWASAPI)
-                default_speakers = self.pyaudio_instance.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
-                
-                target_loopback = None
-                for loopback in self.pyaudio_instance.get_loopback_device_info_generator():
-                    if default_speakers["name"] in loopback["name"]:
-                        target_loopback = loopback
-                        break
-                
-                if target_loopback is None:
-                    target_loopback = self.pyaudio_instance.get_default_wasapi_loopback()
-
-                device_idx = target_loopback['index']
-                channels = int(target_loopback['maxInputChannels']) if int(target_loopback['maxInputChannels']) >= 1 else 2
-                rate = int(target_loopback['defaultSampleRate']) if int(target_loopback['defaultSampleRate']) > 0 else 44100
-
-                self.start_audio_stream(device_idx, channels, rate, is_loopback=True)
-            except Exception as e:
-                print(f"Failed to initialize explicit desktop loopback: {e}")
+            info = self.audio_manager.get_default_desktop_loopback()
+            if info:
+                self.audio_manager.start_stream(info['index'], info['channels'], info['rate'])
 
         elif is_mic:
             self.current_mode = "mic"
             self.setup_file_mode_ui(enabled=False)
-            self.device_combo.setVisible(True)
+            self.sidebar.device_combo.setVisible(True)
 
+            devices = self.audio_manager.get_devices()
             target_index = None
-            try:
-                device_count = self.pyaudio_instance.get_device_count()
-                for i in range(device_count):
-                    dev_info = self.pyaudio_instance.get_device_info_by_index(i)
-                    dev_name = dev_info['name']
-                    if "loopback" not in dev_name.lower() and dev_info['maxInputChannels'] > 0:
-                        self.device_combo.addItem(f"[{i}] {dev_name}", userData=i)
-                        if target_index is None:
-                            target_index = i
+            for idx, name in devices:
+                self.sidebar.device_combo.addItem(f"[{idx}] {name}", userData=idx)
+                if target_index is None:
+                    target_index = idx
 
-                if target_index is not None:
-                    for idx in range(self.device_combo.count()):
-                        if self.device_combo.itemData(idx) == target_index:
-                            self.device_combo.setCurrentIndex(idx)
-                            break
-            except Exception as e:
-                print(f"Error enumerating microphones: {e}")
-
-            self.device_combo.blockSignals(False)
-            if self.device_combo.count() > 0:
-                self.on_device_selected(self.device_combo.currentIndex())
+            self.sidebar.device_combo.blockSignals(False)
+            if self.sidebar.device_combo.count() > 0:
+                self.on_device_selected(self.sidebar.device_combo.currentIndex())
 
     def on_device_selected(self, index):
         if index < 0:
             return
 
-        current_mode_text = self.source_combo.currentText() if hasattr(self, 'source_combo') else ""
+        current_mode_text = self.sidebar.source_combo.currentText() if hasattr(self, 'source_combo') else ""
         if "Microphone" not in current_mode_text:
             return
 
-        device_idx = self.device_combo.itemData(index)
+        device_idx = self.sidebar.device_combo.itemData(index)
         if device_idx is None:
             return
 
         try:
-            dev_info = self.pyaudio_instance.get_device_info_by_index(device_idx)
+            dev_info = self.audio_manager.pyaudio_instance.get_device_info_by_index(device_idx)
             channels = min(2, max(1, int(dev_info['maxInputChannels'])))
             rate = int(dev_info['defaultSampleRate']) if int(dev_info['defaultSampleRate']) > 0 else 44100
 
-            self.start_audio_stream(device_idx, channels, rate, is_loopback=False)
+            self.audio_manager.start_stream(device_idx, channels, rate)
         except Exception as e:
             print(f"Failed to open microphone device {device_idx}: {e}")
-
-    def start_audio_stream(self, device_idx, channels, rate, is_loopback):
-        self.stop_live_stream()
-
-        self.audio_queue = queue.Queue()
-        target_queue = self.audio_queue
-
-        def pyaudio_callback(in_data, frame_count, time_info, status):
-            audio_data = np.frombuffer(in_data, dtype=np.float32).copy()
-            if channels > 1 and audio_data.size > 0:
-                audio_data = audio_data[::channels]
-            target_queue.put(audio_data)
-            return (None, pyaudio.paContinue)
-
-        try:
-            self.live_stream = self.pyaudio_instance.open(
-                format=pyaudio.paFloat32,
-                channels=channels,
-                rate=rate,
-                input=True,
-                input_device_index=device_idx,
-                frames_per_buffer=1024,
-                stream_callback=pyaudio_callback
-            )
-            self.live_stream.start_stream()
-            if hasattr(self, 'playback_timer'):
-                self.playback_timer.start()
-        except Exception as e:
-            print(f"Stream start error on index {device_idx}: {e}")
 
     def setup_file_mode_ui(self, enabled: bool):
         has_play_btn = hasattr(self, "play_btn") and self.play_btn is not None
@@ -736,45 +473,3 @@ class MainWindow(QMainWindow):
             if has_play_btn:
                 self.play_btn.setText("▶")
             self.is_playing = True
-
-    def update_position_labels(self, x, y):
-        # Temporarily block signals so setting the value programmatically doesn't re-trigger valueChanged
-        self.spin_x.blockSignals(True)
-        self.spin_y.blockSignals(True)
-        
-        self.spin_x.setValue(x)
-        self.spin_y.setValue(y)
-        
-        self.spin_x.blockSignals(False)
-        self.spin_y.blockSignals(False)
-
-    def update_position_spinboxes(self, canvas_x, canvas_y):
-        """Updates the sidebar numbers live during a drag without triggering infinite feedback loops."""
-        target_y = -canvas_y  # Invert back so the sidebar shows positive/negative correctly
-
-        # Block signals so setting the value doesn't accidentally trigger a re-entry loop
-        self.spin_x.blockSignals(True)
-        self.spin_y.blockSignals(True)
-
-        if self.spin_x.value() != canvas_x:
-            self.spin_x.setValue(canvas_x)
-        if self.spin_y.value() != target_y:
-            self.spin_y.setValue(target_y)
-
-        self.spin_x.blockSignals(False)
-        self.spin_y.blockSignals(False)
-
-    def on_bar_width_changed(self, value):
-        """Updates the canvas bar width and repaints live."""
-        self.canvas.bar_width = value
-        self.canvas.update()
-
-    def on_gap_size_changed(self, value):
-        """Updates the canvas gap size and repaints live."""
-        self.canvas.gap_size = value
-        self.canvas.update()
-
-    def on_force_squares_changed(self, state):
-        # state is 2 for checked, 0 for unchecked in PyQt6
-        self.canvas.force_squares = (state == Qt.CheckState.Checked.value or state == 2)
-        self.canvas.update()

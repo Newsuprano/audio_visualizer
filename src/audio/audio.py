@@ -5,7 +5,7 @@ import sounddevice as sd
 
 # audio = Path("src/audio/heat_waves.wav")
 # audio = Path("src/audio/birds_of_a_feather.mp3")
-audio = Path("src/audio/symphony.mp3")
+audio = Path("assets/audio/symphony.mp3")
 # audio = Path("src/audio/krunk.mp3")
 
 def open_audio_stream(audio_file_path):

@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import QWidget, QSizePolicy
 # Import modular templates
 from src.templates.line_template import LineTemplate
 from src.templates.block_template import BlockTemplate
-from src.audio import read_chunk_at_position
+from src.audio.audio import read_chunk_at_position
 
 
 class VisualizerCanvas(QWidget):
