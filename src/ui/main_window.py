@@ -25,7 +25,7 @@ from src.audio.audio_player import AudioPlayer
 from src.audio.audio_manager import AudioManager
 import time
 
-audio_file_path = "assets/audio/symphony.mp3"
+#audio_file_path = "assets/audio/symphony.mp3"
 
 
 class MainWindow(QMainWindow):
@@ -37,7 +37,7 @@ class MainWindow(QMainWindow):
         self.resize(1100, 700)
         self.setMouseTracking(True)
 
-        self.is_playing = True
+        self.is_playing = False
         self.current_mode = "file"
         
         # Instantiate dedicated Audio Manager
@@ -78,6 +78,7 @@ class MainWindow(QMainWindow):
         self.sidebar.template_selected.connect(self.canvas.set_template)
         
         # Audio source and device selection routing
+        self.sidebar.audio_file_selected.connect(self.update_audio_path)
         self.sidebar.audio_source_changed.connect(self.on_audio_source_changed)
         self.sidebar.device_selected.connect(self.on_device_selected)
 
@@ -144,7 +145,7 @@ class MainWindow(QMainWindow):
         """)
         bar_layout.addWidget(self.settings_btn)
 
-        self.init_audio(audio_file_path)
+        #self.init_audio(self.audio_file_path)
 
         root_layout.addWidget(self.control_bar)
         self.setCentralWidget(root_widget)
@@ -265,6 +266,12 @@ class MainWindow(QMainWindow):
         return f"{mins}:{secs:02d}"
 
     def init_audio(self, file_path):
+        if not file_path:
+            return
+            
+        self.audio_file_path = file_path
+        self.audio = Path(file_path)
+
         self.audio_player = AudioPlayer()
         success = self.audio_player.load_file(file_path)
         
@@ -277,9 +284,8 @@ class MainWindow(QMainWindow):
             self.audio_stream = open_audio_stream(file_path)
             self.canvas.set_audio_source(self.audio_stream)
             
-            self.audio_player.play(start_sec=0.0)
-            self.is_playing = True
-            self.play_btn.setText("⏸")
+            self.is_playing = False
+            self.play_btn.setText("▶")
 
             total_str = self.format_time(self.track_duration)
             self.time_label.setText(f"0:00 / {total_str}")
@@ -473,3 +479,20 @@ class MainWindow(QMainWindow):
             if has_play_btn:
                 self.play_btn.setText("▶")
             self.is_playing = True
+
+    def update_audio_path(self, path_str):
+        if not path_str:
+            return
+            
+        # Initialize and load the dynamically selected file
+        self.init_audio(path_str)
+        
+        # Automatically start playing and visualizing the chosen file
+        if hasattr(self, "audio_player") and self.audio_player.is_loaded:
+            self.audio_player.play(start_sec=0.0)
+            self.playback_start_wall_time = time.perf_counter()
+            self.playback_start_audio_sec = 0.0
+            
+            self.is_playing = True
+            self.play_btn.setText("⏸")
+            print(f"Loaded and started dynamic audio path: {self.audio}")
