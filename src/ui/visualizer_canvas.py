@@ -1,13 +1,14 @@
 import math
 import numpy as np
 from PyQt6.QtCore import QTimer, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter
-from PyQt6.QtWidgets import QWidget, QSizePolicy
+from PyQt6.QtGui import QColor, QPainter, QImage
+from PyQt6.QtWidgets import QWidget, QSizePolicy, QGraphicsBlurEffect
 
 # Import modular templates
 from src.templates.line_template import LineTemplate
 from src.templates.block_template import BlockTemplate
 from src.audio.audio import read_chunk_at_position
+from src.preset_manager.preset_manager import load_default_preset
 
 
 class VisualizerCanvas(QWidget):
@@ -27,7 +28,7 @@ class VisualizerCanvas(QWidget):
         self.max_bar_length = 180
         self.bar_width = 10 
         self.gap_size = 4
-        self.force_squares = False  # <-- Added flag for square blocks toggle
+        self.force_squares = False
 
         self.current_amplitudes = np.zeros(self.num_bars)
         self.target_amplitudes = np.zeros(self.num_bars)
@@ -42,10 +43,6 @@ class VisualizerCanvas(QWidget):
 
         self.offset_x = 0
         self.offset_y = 0
-
-        # Data states
-        self.current_amplitudes = np.array([])
-        self.target_amplitudes = np.array([])
         
         # References for file mode
         self.audio_file_stream = None
@@ -58,6 +55,27 @@ class VisualizerCanvas(QWidget):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_visualizer)
         self.timer.start(16)
+
+        # Color customization states
+        self.color_mode = "Gradient (Rainbow)"
+        self.solid_color = QColor(0, 255, 150)
+        self.cycle_speed = 3
+        self._color_cycle_hue = 0.0
+
+        # Glow Effect
+        self.glow_intensity = 0.0     
+        self.glow_distance = 50.0      
+        self.glow_angle = 0.0
+        self.glow_style = "Burst"
+        self.glow_layers = 6
+
+    def set_glow_style(self, style_name):
+        self.glow_style = style_name
+        self.update()
+
+    def set_glow_angle(self, angle):
+        self.glow_angle = float(angle)
+        self.update()
 
     def set_audio_source(self, audio_stream):
         """Links the raw PCM audio stream data source."""
@@ -87,7 +105,10 @@ class VisualizerCanvas(QWidget):
             self.current_template = self.templates[template_name]
 
     def update_visualizer(self):
-        """Triggers a re-paint frame."""
+        """Triggers a re-paint frame and advances color cycling if active."""
+        if self.color_mode == "Color Cycle":
+            self._color_cycle_hue = (self._color_cycle_hue + (self.cycle_speed * 0.002)) % 1.0
+            
         self.update()
 
     def _get_smoothed_height(self, idx, am):
@@ -99,7 +120,6 @@ class VisualizerCanvas(QWidget):
         target_val = self.target_amplitudes[idx]
         current_val = self.current_amplitudes[idx]
 
-        # --- BUTTERY SMOOTH LERP ---
         smoothed_val = current_val + (target_val - current_val) * 0.25
         self.current_amplitudes[idx] = smoothed_val
 
@@ -107,10 +127,18 @@ class VisualizerCanvas(QWidget):
         return max(5, target_length)
 
     def _get_color(self, idx):
-        red = min(255, int(idx * 4))
-        green = min(255, max(0, int(255 - abs(idx - (self.num_bars / 2)) * 3)))
-        blue = max(0, int(255 - (idx * 4)))
-        return QColor(red, green, blue)
+        if self.color_mode == "Solid Color":
+            return self.solid_color
+            
+        elif self.color_mode == "Color Cycle":
+            hue = (self._color_cycle_hue + (idx / max(1, self.num_bars))) % 1.0
+            return QColor.fromHsvF(hue, 1.0, 1.0)
+            
+        else:
+            red = min(255, int(idx * 4))
+            green = min(255, max(0, int(255 - abs(idx - (self.num_bars / 2)) * 3)))
+            blue = max(0, int(255 - (idx * 4)))
+            return QColor(red, green, blue)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -145,30 +173,29 @@ class VisualizerCanvas(QWidget):
             event.accept()
 
     def set_offset(self, x, y):
-        """Manually sets visualizer offsets from the sidebar inputs."""
         if self.offset_x != x or self.offset_y != y:
             self.offset_x = x
             self.offset_y = y
             self.update()
 
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.fillRect(self.rect(), Qt.GlobalColor.black)
+    def set_color_mode(self, mode_name):
+        self.color_mode = mode_name
+        self.update()
 
-        width = self.width()
-        height = self.height()
+    def set_solid_color(self, color):
+        if isinstance(color, QColor) and color.isValid():
+            self.solid_color = color
+            self.update()
 
-        if len(self.current_amplitudes) == 0 or self.num_bars <= 0:
-            return
+    def set_cycle_speed(self, speed):
+        self.cycle_speed = speed
 
-        # Slice the amplitudes array to respect your bar-count slider
-        amplitudes = self.current_amplitudes[:self.num_bars]
-        active_count = len(amplitudes)
-        
-        if active_count == 0:
-            return
+    def set_glow_intensity(self, value):
+        self.glow_intensity = value
+        self.update()
 
+    def _draw_geometry(self, painter, width, height, amplitudes, active_count):
+        """Universal geometry renderer used for both the glow buffer and main sharp layer."""
         center_x = (width // 2) + getattr(self, 'offset_x', 0)
         center_y = (height // 2) + getattr(self, 'offset_y', 0)
 
@@ -188,9 +215,7 @@ class VisualizerCanvas(QWidget):
 
         # --- 2. LINEAR STYLE ---
         elif self.visualizer_style == "linear":
-            # Include offset_y so the Y-axis position controls actually move it up and down
             base_y = int(height * 0.8) + getattr(self, 'offset_y', 0)
-            
             total_block_width = active_count * (self.bar_width + self.gap_size) - self.gap_size
             start_x = (width - total_block_width) // 2 + getattr(self, 'offset_x', 0)
 
@@ -255,3 +280,106 @@ class VisualizerCanvas(QWidget):
                     symmetric=False, inner_radius=self.inner_radius, 
                     gap_size=self.gap_size, force_squares=self.force_squares
                 )
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), Qt.GlobalColor.black)
+
+        width = self.width()
+        height = self.height()
+
+        if len(self.current_amplitudes) == 0 or self.num_bars <= 0:
+            return
+
+        amplitudes = self.current_amplitudes[:self.num_bars]
+        active_count = len(amplitudes)
+        
+        if active_count == 0:
+            return
+
+        # --- GLOW PASS BASED ON SELECTED STYLE ---
+        if self.glow_intensity > 0:
+            center_x = (width // 2) + getattr(self, 'offset_x', 0)
+            center_y = (height // 2) + getattr(self, 'offset_y', 0)
+
+            if self.glow_style == "Burst":
+                import math
+                
+                # Use distance for geometry scaling & spreading
+                distance = float(getattr(self, 'glow_distance', self.glow_intensity))
+                # Use intensity strictly for brightness/opacity
+                intensity = float(self.glow_intensity)
+                
+                # --- UPDATED: Dynamic layers from slider ---
+                layers = int(getattr(self, 'glow_layers', 6))
+                layers = max(1, layers) # Prevent division by zero
+
+                has_angle = abs(self.glow_angle) > 0.001
+                rad = math.radians(self.glow_angle) if has_angle else 0
+                
+                total_shift_distance = distance * 1.5 if has_angle else 0
+                shift_x = math.cos(rad) * total_shift_distance if has_angle else 0
+                shift_y = math.sin(rad) * total_shift_distance if has_angle else 0
+
+                # Brightness factor is now driven purely by the intensity slider
+                brightness_factor = intensity * 0.08
+
+                for i in range(layers, 0, -1):
+                    fraction = i / layers
+                    
+                    # Opacity responds to the intensity slider
+                    alpha = (0.04 + (brightness_factor * 0.12)) * (1.0 - (i / (layers + 1)))
+                    
+                    painter.save()
+                    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
+                    painter.setOpacity(alpha)
+                    
+                    half_layers = layers / 2
+                    if i > half_layers:
+                        sub_frac = (i - half_layers) / half_layers if half_layers > 0 else 0.5
+                        # Scale and spread respond to the distance slider
+                        scale = 1.0 + (sub_frac * distance * 0.008)
+                        layer_cx = center_x + (shift_x * sub_frac)
+                        layer_cy = center_y + (shift_y * sub_frac)
+                    else:
+                        sub_frac = i / half_layers if half_layers > 0 else 0.5
+                        scale = 1.0 - ((1.0 - sub_frac) * distance * 0.004)
+                        layer_cx = center_x
+                        layer_cy = center_y
+                    
+                    painter.translate(layer_cx, layer_cy)
+                    painter.scale(scale, scale)
+                    painter.translate(-center_x, -center_y)
+                    
+                    self._draw_geometry(painter, width, height, amplitudes, active_count)
+                    painter.restore()
+
+            elif self.glow_style == "Standard Bloom":
+                glow_img = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
+                glow_img.fill(Qt.GlobalColor.transparent)
+                
+                img_painter = QPainter(glow_img)
+                img_painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                self._draw_geometry(img_painter, width, height, amplitudes, active_count)
+                img_painter.end()
+
+                painter.save()
+                painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
+                scale_factor = 1.0 + (float(self.glow_intensity) * 0.003)
+                bloomed_w = int(width * scale_factor)
+                bloomed_h = int(height * scale_factor)
+                smooth_glow = glow_img.scaled(
+                    bloomed_w, bloomed_h, 
+                    Qt.AspectRatioMode.IgnoreAspectRatio, 
+                    Qt.TransformationMode.SmoothTransformation
+                )
+                dx = (width - bloomed_w) // 2
+                dy = (height - bloomed_h) // 2
+                
+                painter.setOpacity(0.4)
+                painter.drawImage(dx, dy, smooth_glow)
+                painter.restore()
+
+        # --- MAIN CRISP PASS ---
+        self._draw_geometry(painter, width, height, amplitudes, active_count)

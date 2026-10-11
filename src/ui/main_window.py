@@ -84,6 +84,21 @@ class MainWindow(QMainWindow):
         self.sidebar.audio_source_changed.connect(self.on_audio_source_changed)
         self.sidebar.device_selected.connect(self.on_device_selected)
 
+        # Connect color customization widgets to the canvas
+        self.sidebar.color_mode_changed.connect(self.canvas.set_color_mode)
+        self.sidebar.color_changed.connect(self.canvas.set_solid_color)
+        self.sidebar.cycle_speed_changed.connect(self.canvas.set_cycle_speed)
+
+        self.sidebar.glow_changed.connect(self.canvas.set_glow_intensity)
+        self.sidebar.glow_style_changed.connect(self.canvas.set_glow_style)
+        self.sidebar.glow_angle_changed.connect(self.canvas.set_glow_angle)
+
+        self.sidebar.glow_distance_changed.connect(lambda val: setattr(self.canvas, 'glow_distance', float(val)))
+        self.sidebar.glow_distance_changed.connect(self.canvas.update)
+
+        self.sidebar.glow_layers_changed.connect(lambda val: setattr(self.canvas, 'glow_layers', int(val)))
+        self.sidebar.glow_layers_changed.connect(self.canvas.update)
+
         content_layout.addWidget(self.sidebar)
         content_layout.addWidget(self.canvas)
         root_layout.addLayout(content_layout)

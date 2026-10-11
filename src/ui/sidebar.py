@@ -16,15 +16,18 @@ from PyQt6.QtWidgets import (
     QStackedWidget,
     QButtonGroup,
     QLineEdit,
-    QFileDialog
+    QFileDialog,
+    QColorDialog,
+    QInputDialog,
+    QMessageBox
 )
-from PyQt6.QtGui import QIcon, QPixmap
+from PyQt6.QtGui import QIcon, QPixmap, QColor
 from src.ui.template_dialog import TemplateDialog
+from src.preset_manager.preset_manager import save_current_preset, apply_preset_to_ui, load_default_preset
 import sounddevice as sd
 import numpy as np
 
 from assets import Icons
-
 
 class CollapsibleSection(QWidget):
     def __init__(self, title="", parent=None):
@@ -81,6 +84,15 @@ class SidebarPanel(QFrame):
     template_selected = pyqtSignal(str)
     hide_requested = pyqtSignal()
     audio_file_selected = pyqtSignal(str)
+    color_changed = pyqtSignal(object)
+    color_mode_changed = pyqtSignal(str)
+    cycle_speed_changed = pyqtSignal(int)
+    glow_changed = pyqtSignal(int)
+    glow_style_changed = pyqtSignal(str)
+    glow_angle_changed = pyqtSignal(int)
+    glow_distance_changed = pyqtSignal(int)
+    glow_layers_changed = pyqtSignal(int)
+    
 
     def __init__(self, parent=None, initial_bar_width=10, initial_gap_size=4):
         super().__init__(parent)
@@ -151,7 +163,9 @@ class SidebarPanel(QFrame):
 
         # Build pages and dialogs first
         self.setup_general_page(initial_bar_width, initial_gap_size)       # Index 0: Audio Source
-        self.setup_canvas_layout_page(initial_bar_width, initial_gap_size) # Index 1: Canvas Layout                                        # Index 2: Visuals/Geometry
+        self.setup_canvas_layout_page(initial_bar_width, initial_gap_size) # Index 1: Canvas Layout
+        self.setup_presets_page() # Index 2: Presets
+        self.setup_color_page() # Index 3: Visuals/Geometry
 
         self.template_dialog = TemplateDialog(self)
         self.template_dialog.template_selected.connect(self.template_selected.emit)
@@ -248,7 +262,47 @@ class SidebarPanel(QFrame):
         pos_form = QFormLayout(pos_section.content_area)
         pos_form.setContentsMargins(5, 5, 5, 5)
         
-        spin_stylesheet = "QSpinBox { background-color: #2d2d2d; color: white; border: 1px solid #444; }"
+        spin_stylesheet = f"""
+            QSpinBox {{
+                background-color: #2d2d2d;
+                color: white;
+                border: 1px solid #444;
+                padding-right: 22px;
+                border-radius: 4px;
+            }}
+            QSpinBox::up-button {{
+                subcontrol-origin: border;
+                subcontrol-position: top right;
+                width: 18px;
+                background-color: #383838;
+                border-left: 1px solid #444;
+                border-bottom: 1px solid #444;
+                border-top-right-radius: 4px;
+            }}
+            QSpinBox::down-button {{
+                subcontrol-origin: border;
+                subcontrol-position: bottom right;
+                width: 18px;
+                background-color: #383838;
+                border-left: 1px solid #444;
+                border-top: 1px solid #444;
+                border-bottom-right-radius: 4px;
+            }}
+            QSpinBox::up-button:hover, QSpinBox::down-button:hover {{
+                background-color: #484848;
+            }}
+            /* Point directly to your assets.py icon paths */
+            QSpinBox::up-arrow {{
+                image: url("{Icons.ARROW_DROP_UP.as_posix()}");
+                width: 12px;
+                height: 12px;
+            }}
+            QSpinBox::down-arrow {{
+                image: url("{Icons.ARROW_DROP_DOWN.as_posix()}");
+                width: 12px;
+                height: 12px;
+            }}
+        """
         self.spin_x = QSpinBox()
         self.spin_x.setRange(-2000, 2000)
         self.spin_x.setValue(0)
@@ -339,6 +393,181 @@ class SidebarPanel(QFrame):
         
         layout.addStretch()
         self.stack.addWidget(self.wrap_in_scroll(page))
+
+    def setup_presets_page(self):
+        page = QWidget()
+        page.setFixedWidth(270)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+
+        # Section for Presets Management
+        preset_section = CollapsibleSection("Preset Management")
+        preset_form = QFormLayout(preset_section.content_area)
+        preset_form.setContentsMargins(5, 5, 5, 5)
+
+        # Save Preset Button styled to match your theme
+        save_btn = QPushButton("Save Current as Preset")
+        save_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #383838;
+                color: #00ff96;
+                border: 1px solid #555;
+                padding: 8px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #484848;
+            }
+        """)
+        save_btn.clicked.connect(self._handle_save_preset)
+        preset_form.addRow(save_btn)
+
+        layout.addWidget(preset_section)
+        layout.addStretch()
+        
+        # Wrap in scroll and add to your stacked widget at index 2 (the third icon)
+        self.stack.addWidget(self.wrap_in_scroll(page))
+
+    def _handle_save_preset(self):
+        name, ok = QInputDialog.getText(self, "Save Preset", "Enter preset name:")
+        if not ok:
+            return
+            
+        try:
+            saved_path = save_current_preset(self, name if name.strip() else None)
+            print(f"Preset successfully saved to: {saved_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save preset:\n{str(e)}")
+
+    def load_initial_defaults(self):
+        config = load_default_preset()
+        if config:
+            apply_preset_to_ui(self, config)
+
+    def setup_color_page(self):
+        page = QWidget()
+        page.setFixedWidth(270)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+
+        color_section = CollapsibleSection("Color Customization")
+        color_form = QFormLayout(color_section.content_area)
+        color_form.setContentsMargins(5, 5, 5, 5)
+
+        # 1. Color Mode Selector
+        self.color_mode_combo = QComboBox()
+        self.color_mode_combo.addItems(["Gradient (Rainbow)", "Solid Color", "Color Cycle"])
+        self.color_mode_combo.setStyleSheet("""
+            QComboBox { background-color: #2d2d2d; color: #00ff96; border: 1px solid #444; padding: 4px; border-radius: 4px; }
+        """)
+        self.color_mode_combo.currentTextChanged.connect(self.color_mode_changed.emit)
+        color_form.addRow("Color Mode:", self.color_mode_combo)
+
+        # 2. Solid Color Picker Button
+        self.selected_solid_color = QColor(0, 255, 150)  
+        self.solid_color_btn = QPushButton("Choose Color...")
+        self.update_color_button_style(self.selected_solid_color)
+        self.solid_color_btn.clicked.connect(self._open_color_picker)
+        color_form.addRow("Solid Color:", self.solid_color_btn)
+
+        # 3. Color Cycle Speed Slider
+        self.cycle_speed_slider = QSlider(Qt.Orientation.Horizontal)
+        self.cycle_speed_slider.setRange(1, 10)
+        self.cycle_speed_slider.setValue(3)
+        self.cycle_speed_slider.valueChanged.connect(self.cycle_speed_changed.emit)
+        color_form.addRow("Cycle Speed:", self.cycle_speed_slider)
+
+        # --- 4. Glow Controls ---
+        # Glow Intensity Slider (0 = Off)
+        self.glow_slider = QSlider(Qt.Orientation.Horizontal)
+        self.glow_slider.setRange(0, 200)
+        self.glow_slider.setValue(0)  
+        
+        self.glow_label = QLabel("Off")
+        self.glow_slider.valueChanged.connect(lambda v: self.glow_label.setText(str(v) if v > 0 else "Off"))
+        self.glow_slider.valueChanged.connect(self.glow_changed.emit)
+        
+        color_form.addRow("Glow Intensity:", self.glow_slider)
+        color_form.addRow("", self.glow_label)
+
+        # Glow Distance Slider
+        self.glow_distance_slider = QSlider(Qt.Orientation.Horizontal)
+        self.glow_distance_slider.setRange(0, 200)
+        self.glow_distance_slider.setValue(50)  
+        
+        self.glow_distance_label = QLabel("50")
+        self.glow_distance_slider.valueChanged.connect(lambda v: self.glow_distance_label.setText(str(v)))
+        self.glow_distance_slider.valueChanged.connect(self.glow_distance_changed.emit)
+        
+        color_form.addRow("Glow Distance:", self.glow_distance_slider)
+        color_form.addRow("", self.glow_distance_label)
+
+        # --- NEW: Glow Layers Slider ---
+        self.glow_layers_slider = QSlider(Qt.Orientation.Horizontal)
+        self.glow_layers_slider.setRange(1, 12)
+        self.glow_layers_slider.setValue(6)  # Default layer count
+        
+        self.glow_layers_label = QLabel("6")
+        self.glow_layers_slider.valueChanged.connect(lambda v: self.glow_layers_label.setText(str(v)))
+        self.glow_layers_slider.valueChanged.connect(self.glow_layers_changed.emit)
+        
+        color_form.addRow("Glow Layers:", self.glow_layers_slider)
+        color_form.addRow("", self.glow_layers_label)
+
+        # Glow Style Dropdown
+        self.glow_style_combo = QComboBox()
+        self.glow_style_combo.addItems(["Burst", "Standard Bloom"])
+        self.glow_style_combo.setStyleSheet("""
+            QComboBox { background-color: #2d2d2d; color: #00ff96; border: 1px solid #444; padding: 4px; border-radius: 4px; }
+        """)
+        self.glow_style_combo.currentTextChanged.connect(self.glow_style_changed.emit)
+        color_form.addRow("Glow Style:", self.glow_style_combo)
+
+        # Glow Angle Slider (0 to 360 degrees)
+        self.angle_slider = QSlider(Qt.Orientation.Horizontal)
+        self.angle_slider.setRange(0, 360)
+        self.angle_slider.setValue(0)
+        
+        self.angle_label = QLabel("0°")
+        self.angle_slider.valueChanged.connect(lambda v: self.angle_label.setText(f"{v}°"))
+        self.angle_slider.valueChanged.connect(self.glow_angle_changed.emit)
+        
+        color_form.addRow("Glow Angle:", self.angle_slider)
+        color_form.addRow("", self.angle_label)
+
+        layout.addWidget(color_section)
+        layout.addStretch()
+        self.stack.addWidget(self.wrap_in_scroll(page))
+
+    def _open_color_picker(self):
+        # Open PyQt6's native QColorDialog anchored to the sidebar
+        color = QColorDialog.getColor(self.selected_solid_color, self, "Select Solid Visualizer Color")
+        if color.isValid():
+            self.selected_solid_color = color
+            self.update_color_button_style(color)
+            self.color_changed.emit(color)
+
+    def update_color_button_style(self, color):
+        # Dynamically change the button's background and text color based on brightness
+        hex_val = color.name()
+        # Simple contrast check for text color
+        text_color = "#000000" if color.lightness() > 128 else "#ffffff"
+        self.solid_color_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {hex_val};
+                color: {text_color};
+                font-weight: bold;
+                border: 1px solid #555;
+                border-radius: 4px;
+                padding: 5px;
+            }}
+            QPushButton:hover {{
+                border: 1px solid #fff;
+            }}
+        """)
 
     def show_template_dialog(self):
         self.template_dialog.set_shape(self.canvas.visualizer_style if hasattr(self, 'canvas') else "circular")

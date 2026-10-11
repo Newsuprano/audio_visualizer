@@ -46,3 +46,9 @@ class Icons:
     VOLUME_OFF_24 = (CLEAR_DIR_24 / "volume_off_24.svg")
     VOLUME_DOWN_24 = (CLEAR_DIR_24 / "volume_down_24.svg")
     VOLUME_UP_24 = (CLEAR_DIR_24 / "volume_up_24.svg")
+
+    # ====================
+
+    ## SpinBox
+    ARROW_DROP_DOWN = (ROOT_DIR / ICONS_DIR / "x24" / "arrow_drop_down.svg")
+    ARROW_DROP_UP = (ROOT_DIR / ICONS_DIR / "x24" / "arrow_drop_up.svg")
