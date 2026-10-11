@@ -167,8 +167,10 @@ class SidebarPanel(QFrame):
         self.setup_presets_page() # Index 2: Presets
         self.setup_color_page() # Index 3: Visuals/Geometry
 
+        self.current_template = "lines"
+
         self.template_dialog = TemplateDialog(self)
-        self.template_dialog.template_selected.connect(self.template_selected.emit)
+        self.template_dialog.template_selected.connect(self._on_template_selected)
 
         # Connect icon buttons after stack and widgets are fully created
         self.btn_mode.clicked.connect(lambda: self.switch_category(0))
@@ -572,6 +574,10 @@ class SidebarPanel(QFrame):
     def show_template_dialog(self):
         self.template_dialog.set_shape(self.canvas.visualizer_style if hasattr(self, 'canvas') else "circular")
         self.template_dialog.exec()
+
+    def _on_template_selected(self, key):
+        self.current_template = key
+        self.template_selected.emit(key)
 
     def _emit_position(self):
         self.position_changed.emit(self.spin_x.value(), self.spin_y.value())

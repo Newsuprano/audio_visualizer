@@ -13,5 +13,13 @@
     },
     "style": {
         "visual_style": "Circular"
+    },
+    "colors": {
+        "color_mode": "Gradient (Rainbow)",
+        "cycle_speed": 3
+    },
+    "glow_settings": {
+        "distance": 50,
+        "style": "Burst"
     }
 }

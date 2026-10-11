@@ -1,0 +1,26 @@
+{
+    "canvas_layout": {
+        "x": 0,
+        "y": 0,
+        "bar_width": 10,
+        "gap_size": 4,
+        "force_squares": false
+    },
+    "geometry": {
+        "bar_count": 64,
+        "inner_radius": 120,
+        "max_height": 180
+    },
+    "style": {
+        "visual_style": "Circular"
+    },
+    "colors": {
+        "color_mode": "Gradient (Rainbow)",
+        "cycle_speed": 3
+    },
+    "glow_settings": {
+        "distance": 50,
+        "angle": 0,
+        "style": "Burst"
+    }
+}

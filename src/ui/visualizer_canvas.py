@@ -23,26 +23,42 @@ class VisualizerCanvas(QWidget):
             QSizePolicy.Policy.Expanding
         )
 
-        self.num_bars = 64
-        self.inner_radius = 120
-        self.max_bar_length = 180
-        self.bar_width = 10 
-        self.gap_size = 4
-        self.force_squares = False
+        # Load default preset config
+        config = load_default_preset()
+        layout_cfg = config.get("canvas_layout", {})
+        geom_cfg = config.get("geometry", {})
+        style_cfg = config.get("style", {})
+        color_cfg = config.get("colors", {})
+        glow_cfg = config.get("glow_settings", {})
+
+        # Geometry & Layout Mapping
+        self.num_bars = geom_cfg.get("bar_count", 64)
+        if not self.num_bars: 
+            self.num_bars = 64
+
+        self.inner_radius = geom_cfg.get("inner_radius", 120)
+        self.max_bar_length = geom_cfg.get("max_height", 180)
+        self.bar_width = layout_cfg.get("bar_width", 10) 
+        self.gap_size = layout_cfg.get("gap_size", 4)
+        self.force_squares = layout_cfg.get("force_squares", False)
 
         self.current_amplitudes = np.zeros(self.num_bars)
         self.target_amplitudes = np.zeros(self.num_bars)
         
-        self.visualizer_style = "circular"
+        # Style & Template Mapping
+        visual_style_name = style_cfg.get("visualizer_style", style_cfg.get("visual_style", "lines"))
+        self.visualizer_style = str(visual_style_name).lower()
         
         self.templates = {
             "lines": LineTemplate(),
             "blocks": BlockTemplate()
         }
-        self.current_template = self.templates["lines"]
+        # Safely match style or default to lines
+        template_key = style_cfg.get("template", "lines")
+        self.current_template = self.templates.get(template_key, self.templates["lines"])
 
-        self.offset_x = 0
-        self.offset_y = 0
+        self.offset_x = layout_cfg.get("x", 0)
+        self.offset_y = layout_cfg.get("y", 0)
         
         # References for file mode
         self.audio_file_stream = None
@@ -56,18 +72,19 @@ class VisualizerCanvas(QWidget):
         self.timer.timeout.connect(self.update_visualizer)
         self.timer.start(16)
 
-        # Color customization states
-        self.color_mode = "Gradient (Rainbow)"
-        self.solid_color = QColor(0, 255, 150)
-        self.cycle_speed = 3
+        # Color Customization States
+        self.color_mode = color_cfg.get("color_mode", "Gradient (Rainbow)")
+        rgb = color_cfg.get("solid_color", [0, 255, 150])
+        self.solid_color = QColor(rgb[0], rgb[1], rgb[2])
+        self.cycle_speed = color_cfg.get("cycle_speed", 3)
         self._color_cycle_hue = 0.0
 
-        # Glow Effect
-        self.glow_intensity = 0.0     
-        self.glow_distance = 50.0      
-        self.glow_angle = 0.0
-        self.glow_style = "Burst"
-        self.glow_layers = 6
+        # Glow Effect States
+        self.glow_intensity = glow_cfg.get("intensity", 0.0)    
+        self.glow_distance = glow_cfg.get("distance", 50.0)      
+        self.glow_angle = glow_cfg.get("angle", 0.0)
+        self.glow_style = glow_cfg.get("style", "Burst")
+        self.glow_layers = glow_cfg.get("layers", 6)
 
     def set_glow_style(self, style_name):
         self.glow_style = style_name
